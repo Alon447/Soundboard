@@ -1,16 +1,111 @@
 /* Tailwind v4 — import order matters: tailwindcss first, then heroui */
-@import "tailwindcss";
-@import "@heroui/styles";
+@import 'tailwindcss';
+@import '@heroui/styles';
 
 /* Dark base */
 @layer base {
-  :root {
-    color-scheme: dark;
-  }
+	:root {
+		color-scheme: dark;
+		--background: #09090d;
+		--foreground: #f7f4ee;
+		--surface: #13131a;
+		--surface-elevated: #1b1c24;
+		--surface-strong: #232530;
+		--border: rgba(255, 255, 255, 0.12);
+		--border-strong: rgba(255, 255, 255, 0.2);
+		--muted: rgba(255, 255, 255, 0.08);
+		--muted-foreground: rgba(247, 244, 238, 0.58);
+		--accent: #ff7a18;
+		--accent-hover: #ff8f38;
+		--accent-foreground: #160b00;
+		--default: #232530;
+		--default-hover: #2d3040;
+		--default-foreground: #f7f4ee;
+		--accent-soft-foreground: #f7f4ee;
+		--danger: #ef4444;
+		--danger-hover: #f05d5d;
+		--danger-foreground: #fff5f5;
+		--danger-soft: rgba(239, 68, 68, 0.16);
+		--danger-soft-hover: rgba(239, 68, 68, 0.24);
+		--danger-soft-foreground: #ffb4b4;
+		--field: #171821;
+		--field-hover: #1c1e29;
+		--field-focus: #1f212e;
+		--field-foreground: #f7f4ee;
+		--field-placeholder: rgba(247, 244, 238, 0.32);
+		--field-border: rgba(255, 255, 255, 0.1);
+		--field-border-hover: rgba(255, 255, 255, 0.18);
+		--field-border-focus: #ff7a18;
+		--segment: #171821;
+		--segment-foreground: #f7f4ee;
+	}
 
-  /* Restore pointer cursor on buttons (Tailwind v4 changed default to default) */
-  button:not(:disabled),
-  [role="button"]:not(:disabled) {
-    cursor: pointer;
-  }
+	html,
+	body,
+	#root {
+		min-height: 100%;
+	}
+
+	body {
+		background: radial-gradient(circle at top, rgba(255, 122, 24, 0.14), transparent 28%), linear-gradient(180deg, #0a0a0e 0%, #09090d 100%);
+		color: var(--foreground);
+	}
+
+	/* Restore pointer cursor on buttons (Tailwind v4 changed default to default) */
+	button:not(:disabled),
+	[role='button']:not(:disabled) {
+		cursor: pointer;
+	}
+}
+
+@layer components {
+	.sb-button {
+		@apply gap-2 rounded-xl border border-white/10 font-medium shadow-none;
+	}
+
+	.sb-input {
+		@apply rounded-xl;
+	}
+
+	.sb-modal-surface {
+		background: linear-gradient(180deg, rgba(28, 30, 39, 0.98), rgba(17, 17, 24, 0.98));
+		border-color: var(--border);
+		box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+	}
+
+	.sb-tab-list {
+		@apply rounded-2xl border border-white/8 p-1;
+		background: rgba(255, 255, 255, 0.04);
+	}
+
+	.sb-tabs .tabs__panel {
+		@apply mt-2 rounded-2xl border border-white/8 p-3;
+		background: rgba(255, 255, 255, 0.03);
+	}
+
+	.sb-slider {
+		@apply gap-2;
+	}
+
+	.sb-slider .slider__output {
+		@apply text-[11px] font-semibold text-white/55;
+	}
+
+	.sb-slider .slider__track {
+		@apply rounded-full;
+		background: rgba(255, 255, 255, 0.08);
+		box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+	}
+
+	.sb-slider .slider__fill {
+		background: linear-gradient(90deg, #ff7a18, #ffb347);
+	}
+
+	.sb-slider .slider__thumb::after {
+		width: 1rem;
+		height: 1rem;
+		border: 2px solid rgba(255, 122, 24, 0.8);
+		background: #fff7ef;
+		box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+	}
 }
