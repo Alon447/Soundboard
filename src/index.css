@@ -1,3 +1,16 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind v4 — import order matters: tailwindcss first, then heroui */
+@import "tailwindcss";
+@import "@heroui/styles";
+
+/* Dark base */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  /* Restore pointer cursor on buttons (Tailwind v4 changed default to default) */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}

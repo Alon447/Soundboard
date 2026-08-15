@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase, type UserSound } from './supabase';
 import { SOUNDS } from './sounds';
 import { useAuth } from './useAuth';
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
 export type BoardSound = {
-  // The row id in user_sounds
-  dbId: string;
-  // The id used for playback / keybinding
-  id: string;
+  dbId: string;       // user_sounds.id (UUID) — used for DB ops
+  id: string;         // sound_id for builtins, dbId for custom — used for keybinding / activeId
   name: string;
-  audio_path: string;
+  audio_path: string; // resolved: built-in path or Supabase signed URL
   image_path?: string | null;
   icon?: string | null;
   color: string;
@@ -17,10 +19,20 @@ export type BoardSound = {
   position: number;
 };
 
-function userSoundToBoard(row: UserSound): BoardSound {
-  // If it references a built-in sound, merge in the built-in audio_path
-  const builtin = row.sound_id ? SOUNDS.find((s) => s.id === row.sound_id) : null;
+// ---------------------------------------------------------------------------
+// Query key factory — single source of truth for cache keys
+// ---------------------------------------------------------------------------
 
+export const soundKeys = {
+  all: (userId: string) => ['user_sounds', userId] as const,
+};
+
+// ---------------------------------------------------------------------------
+// Row → BoardSound mapper
+// ---------------------------------------------------------------------------
+
+function userSoundToBoard(row: UserSound): BoardSound {
+  const builtin = row.sound_id ? SOUNDS.find((s) => s.id === row.sound_id) : null;
   return {
     dbId: row.id,
     id: row.sound_id ?? row.id,
@@ -34,140 +46,226 @@ function userSoundToBoard(row: UserSound): BoardSound {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Fetcher (used by useQuery)
+// ---------------------------------------------------------------------------
+
+async function fetchUserSounds(userId: string): Promise<BoardSound[]> {
+  const { data, error } = await supabase
+    .from('user_sounds')
+    .select('*')
+    .eq('user_id', userId)
+    .order('position', { ascending: true });
+
+  if (error) throw new Error(error.message);
+  return (data as UserSound[]).map(userSoundToBoard);
+}
+
+// ---------------------------------------------------------------------------
+// Hook
+// ---------------------------------------------------------------------------
+
 export function useUserSounds() {
   const { user } = useAuth();
-  const [sounds, setSounds] = useState<BoardSound[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const qc = useQueryClient();
 
-  const fetchSounds = useCallback(async () => {
-    if (!user) return;
-    setLoading(true);
-    setError(null);
+  // ---- Query ---------------------------------------------------------------
 
-    const { data, error } = await supabase
-      .from('user_sounds')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('position', { ascending: true });
+  const {
+    data: sounds = [],
+    isLoading: loading,
+    error: queryError,
+  } = useQuery({
+    queryKey: soundKeys.all(user?.id ?? ''),
+    queryFn: () => fetchUserSounds(user!.id),
+    enabled: Boolean(user),
+  });
 
-    if (error) {
-      setError(error.message);
-    } else {
-      setSounds((data as UserSound[]).map(userSoundToBoard));
-    }
+  const error = queryError ? (queryError as Error).message : null;
 
-    setLoading(false);
-  }, [user]);
+  // Helper to invalidate the sounds list after a write
+  const invalidate = () => qc.invalidateQueries({ queryKey: soundKeys.all(user?.id ?? '') });
 
-  useEffect(() => {
-    fetchSounds();
-  }, [fetchSounds]);
+  // ---- Add built-in --------------------------------------------------------
 
-  // Add a built-in sound to the user's board
-  const addBuiltinSound = useCallback(async (soundId: string) => {
-    if (!user) return;
+  const addBuiltinMutation = useMutation({
+    mutationFn: async (soundId: string) => {
+      if (!user) throw new Error('Not authenticated');
+      const builtin = SOUNDS.find((s) => s.id === soundId);
+      if (!builtin) throw new Error(`Unknown sound: ${soundId}`);
 
-    const builtin = SOUNDS.find((s) => s.id === soundId);
-    if (!builtin) return;
+      const { error } = await supabase.from('user_sounds').insert({
+        user_id: user.id,
+        sound_id: soundId,
+        name: builtin.name,
+        color: builtin.color ?? '#f97316',
+        icon: builtin.icon ?? 'Volume2',
+        gain: builtin.gain ?? 1,
+        position: sounds.length,
+      });
+      if (error) throw new Error(error.message);
+    },
+    onSuccess: invalidate,
+  });
 
-    const position = sounds.length;
+  // ---- Add custom (upload + insert) ----------------------------------------
 
-    const { error } = await supabase.from('user_sounds').insert({
-      user_id: user.id,
-      sound_id: soundId,
-      name: builtin.name,
-      color: builtin.color ?? '#f97316',
-      icon: builtin.icon ?? 'Volume2',
-      gain: builtin.gain ?? 1,
-      position,
-    });
-
-    if (error) {
-      setError(error.message);
-    } else {
-      await fetchSounds();
-    }
-  }, [user, sounds.length, fetchSounds]);
-
-  // Add a user-uploaded sound
-  const addCustomSound = useCallback(async (file: File, name: string, color: string, icon: string) => {
-    if (!user) return;
-
-    // Upload file to storage under user's folder
-    const ext = file.name.split('.').pop();
-    const filePath = `${user.id}/${Date.now()}.${ext}`;
-
-    const { error: uploadError } = await supabase.storage
-      .from('sounds')
-      .upload(filePath, file, { upsert: false });
-
-    if (uploadError) {
-      setError(uploadError.message);
-      return;
-    }
-
-    // Get a signed URL valid for 10 years (effectively permanent for our use)
-    const { data: signedData, error: signedError } = await supabase.storage
-      .from('sounds')
-      .createSignedUrl(filePath, 60 * 60 * 24 * 365 * 10);
-
-    if (signedError || !signedData?.signedUrl) {
-      setError(signedError?.message ?? 'Failed to get file URL');
-      return;
-    }
-
-    const position = sounds.length;
-
-    const { error: insertError } = await supabase.from('user_sounds').insert({
-      user_id: user.id,
-      sound_id: null,
-      custom_file_url: signedData.signedUrl,
+  const addCustomMutation = useMutation({
+    mutationFn: async ({
+      file,
       name,
       color,
       icon,
-      gain: 1,
-      position,
-    });
+    }: {
+      file: File;
+      name: string;
+      color: string;
+      icon: string;
+    }) => {
+      if (!user) throw new Error('Not authenticated');
 
-    if (insertError) {
-      setError(insertError.message);
-    } else {
-      await fetchSounds();
-    }
-  }, [user, sounds.length, fetchSounds]);
+      const ext = file.name.split('.').pop();
+      const filePath = `${user.id}/${Date.now()}.${ext}`;
 
-  // Remove a sound from the board
-  const removeSound = useCallback(async (dbId: string) => {
-    const { error } = await supabase.from('user_sounds').delete().eq('id', dbId);
-    if (error) {
-      setError(error.message);
-    } else {
-      setSounds((prev) => prev.filter((s) => s.dbId !== dbId));
-    }
-  }, []);
+      const { error: uploadError } = await supabase.storage
+        .from('sounds')
+        .upload(filePath, file, { upsert: false });
+      if (uploadError) throw new Error(uploadError.message);
 
-  // Reorder — swap two positions
-  const moveSound = useCallback(async (dbId: string, direction: 'left' | 'right') => {
-    const index = sounds.findIndex((s) => s.dbId === dbId);
-    const swapIndex = direction === 'left' ? index - 1 : index + 1;
-    if (swapIndex < 0 || swapIndex >= sounds.length) return;
+      const { data: signedData, error: signedError } = await supabase.storage
+        .from('sounds')
+        .createSignedUrl(filePath, 60 * 60 * 24 * 365 * 10);
+      if (signedError || !signedData?.signedUrl)
+        throw new Error(signedError?.message ?? 'Failed to get file URL');
 
-    const a = sounds[index];
-    const b = sounds[swapIndex];
+      const { error: insertError } = await supabase.from('user_sounds').insert({
+        user_id: user.id,
+        sound_id: null,
+        custom_file_url: signedData.signedUrl,
+        name,
+        color,
+        icon,
+        gain: 1,
+        position: sounds.length,
+      });
+      if (insertError) throw new Error(insertError.message);
+    },
+    onSuccess: invalidate,
+  });
 
-    // Optimistic update
-    const next = [...sounds];
-    next[index] = { ...b, position: a.position };
-    next[swapIndex] = { ...a, position: b.position };
-    setSounds(next);
+  // ---- Remove --------------------------------------------------------------
 
-    // Persist both rows
-    await Promise.all([
-      supabase.from('user_sounds').update({ position: b.position }).eq('id', a.dbId),
-      supabase.from('user_sounds').update({ position: a.position }).eq('id', b.dbId),
-    ]);
-  }, [sounds]);
+  const removeMutation = useMutation({
+    mutationFn: async (dbId: string) => {
+      const { error } = await supabase.from('user_sounds').delete().eq('id', dbId);
+      if (error) throw new Error(error.message);
+    },
+    // Optimistic: remove from cache immediately, restore on error
+    onMutate: async (dbId) => {
+      await qc.cancelQueries({ queryKey: soundKeys.all(user?.id ?? '') });
+      const previous = qc.getQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''));
+      qc.setQueryData<BoardSound[]>(
+        soundKeys.all(user?.id ?? ''),
+        (old = []) => old.filter((s) => s.dbId !== dbId),
+      );
+      return { previous };
+    },
+    onError: (_err, _dbId, ctx) => {
+      if (ctx?.previous)
+        qc.setQueryData(soundKeys.all(user?.id ?? ''), ctx.previous);
+    },
+    onSettled: invalidate,
+  });
 
-  return { sounds, loading, error, addBuiltinSound, addCustomSound, removeSound, moveSound, refetch: fetchSounds };
+  // ---- Move (swap positions) -----------------------------------------------
+
+  const moveMutation = useMutation({
+    mutationFn: async ({ dbId, direction }: { dbId: string; direction: 'left' | 'right' }) => {
+      const index = sounds.findIndex((s) => s.dbId === dbId);
+      const swapIndex = direction === 'left' ? index - 1 : index + 1;
+      if (swapIndex < 0 || swapIndex >= sounds.length) return;
+
+      const a = sounds[index];
+      const b = sounds[swapIndex];
+
+      await Promise.all([
+        supabase.from('user_sounds').update({ position: b.position }).eq('id', a.dbId),
+        supabase.from('user_sounds').update({ position: a.position }).eq('id', b.dbId),
+      ]);
+    },
+    // Optimistic swap
+    onMutate: async ({ dbId, direction }) => {
+      await qc.cancelQueries({ queryKey: soundKeys.all(user?.id ?? '') });
+      const previous = qc.getQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''));
+
+      qc.setQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''), (old = []) => {
+        const next = [...old];
+        const index = next.findIndex((s) => s.dbId === dbId);
+        const swapIndex = direction === 'left' ? index - 1 : index + 1;
+        if (swapIndex < 0 || swapIndex >= next.length) return old;
+        const a = next[index];
+        const b = next[swapIndex];
+        next[index] = { ...b, position: a.position };
+        next[swapIndex] = { ...a, position: b.position };
+        return next;
+      });
+
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous)
+        qc.setQueryData(soundKeys.all(user?.id ?? ''), ctx.previous);
+    },
+    onSettled: invalidate,
+  });
+
+  // ---- Update gain ---------------------------------------------------------
+
+  const updateGainMutation = useMutation({
+    mutationFn: async ({ dbId, gain }: { dbId: string; gain: number }) => {
+      const { error } = await supabase
+        .from('user_sounds')
+        .update({ gain })
+        .eq('id', dbId);
+      if (error) throw new Error(error.message);
+    },
+    // Optimistic: update gain in cache immediately
+    onMutate: async ({ dbId, gain }) => {
+      await qc.cancelQueries({ queryKey: soundKeys.all(user?.id ?? '') });
+      const previous = qc.getQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''));
+      qc.setQueryData<BoardSound[]>(
+        soundKeys.all(user?.id ?? ''),
+        (old = []) => old.map((s) => (s.dbId === dbId ? { ...s, gain } : s)),
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous)
+        qc.setQueryData(soundKeys.all(user?.id ?? ''), ctx.previous);
+    },
+    // No invalidate needed — optimistic update is already the final state
+  });
+
+  // ---- Stable callsite API (same shape as before) --------------------------
+
+  return {
+    sounds,
+    loading,
+    error,
+
+    addBuiltinSound: (soundId: string) => addBuiltinMutation.mutateAsync(soundId),
+
+    addCustomSound: (file: File, name: string, color: string, icon: string) =>
+      addCustomMutation.mutateAsync({ file, name, color, icon }),
+
+    removeSound: (dbId: string) => removeMutation.mutate(dbId),
+
+    moveSound: (dbId: string, direction: 'left' | 'right') =>
+      moveMutation.mutate({ dbId, direction }),
+
+    updateGain: (dbId: string, gain: number) =>
+      updateGainMutation.mutate({ dbId, gain }),
+
+    refetch: () => invalidate(),
+  };
 }
