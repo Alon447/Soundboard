@@ -44,7 +44,6 @@ export default function SoundPad({
 				<VolumePopover
 					dbId={sound.dbId}
 					gain={sound.gain}
-					color={color}
 					onUpdate={onUpdateGain}
 					onClose={onCloseVolumePopover}
 				/>
