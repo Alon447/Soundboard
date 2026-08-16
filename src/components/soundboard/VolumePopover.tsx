@@ -3,12 +3,11 @@ import { useEffect } from 'react';
 type VolumePopoverProps = {
 	dbId: string;
 	gain: number;
-	color: string;
 	onUpdate: (dbId: string, gain: number) => void;
 	onClose: () => void;
 };
 
-export default function VolumePopover({ dbId, gain, color, onUpdate, onClose }: VolumePopoverProps) {
+export default function VolumePopover({ dbId, gain, onUpdate, onClose }: VolumePopoverProps) {
 	useEffect(() => {
 		const id = setTimeout(() => {
 			const handler = (event: MouseEvent) => {
@@ -30,7 +29,7 @@ export default function VolumePopover({ dbId, gain, color, onUpdate, onClose }: 
 			onPointerDown={(event) => event.stopPropagation()}
 		>
 			<div className="flex gap-1">
-				{[25, 50, 100, 200, 400].map((value) => (
+				{[ 100, 400, 600, 800].map((value) => (
 					<button
 						key={value}
 						type="button"

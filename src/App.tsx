@@ -136,6 +136,7 @@ export default function App() {
 	if (!user) return <AuthPage />;
 
 	const existingSoundIds = sounds.map((s) => s.id);
+	const identityLabel = user.email ?? 'Signed in';
 
 	return (
 		<div className="min-h-screen bg-[#0a0a0b] text-white flex flex-col">
@@ -147,7 +148,7 @@ export default function App() {
 					</div>
 					<div>
 						<h1 className="text-lg font-bold tracking-tight">Soundboard</h1>
-						<p className="text-xs text-white/40">{user.email}</p>
+						<p className="text-xs text-white/40">{identityLabel}</p>
 					</div>
 				</div>
 
@@ -163,7 +164,6 @@ export default function App() {
 						{editMode ? 'Done' : 'Edit'}
 					</Button>
 
-					{/* Add sound */}
 					<Button
 						variant="primary"
 						size="sm"
@@ -218,48 +218,49 @@ export default function App() {
 						</Button>
 					</div>
 				) : (
-					<div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3 max-w-4xl w-full">
-						{sounds.map((sound, index) => {
-							const isActive = activeId === sound.id;
-							const keyHint = PAD_KEYS[index];
-							const isVolumeOpen = volumePopoverId === sound.dbId;
+					<div className="w-full max-w-4xl space-y-3">
+						<div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-3 max-w-4xl w-full">
+							{sounds.map((sound, index) => {
+								const isActive = activeId === sound.id;
+								const keyHint = PAD_KEYS[index];
+								const isVolumeOpen = volumePopoverId === sound.dbId;
 
-							return (
-								<SoundPad
-									key={sound.dbId}
-									sound={sound}
-									index={index}
-									totalSounds={sounds.length}
-									editMode={editMode}
-									isActive={isActive}
-									keyHint={keyHint}
-									isVolumeOpen={isVolumeOpen}
-									onTrigger={(nextSound) => {
-										void triggerPad(nextSound);
-									}}
-									onRemove={(dbId) => {
-										void removeSound(dbId);
-									}}
-									onMove={(dbId, direction) => {
-										void moveSound(dbId, direction);
-									}}
-									onUpdateGain={(dbId, gain) => {
-										void updateGain(dbId, gain);
-									}}
-									onToggleVolumePopover={toggleVolumePopover}
-									onCloseVolumePopover={() => setVolumePopoverId(null)}
-								/>
-							);
-						})}
+								return (
+									<SoundPad
+										key={sound.dbId}
+										sound={sound}
+										index={index}
+										totalSounds={sounds.length}
+										editMode={editMode}
+										isActive={isActive}
+										keyHint={keyHint}
+										isVolumeOpen={isVolumeOpen}
+										onTrigger={(nextSound) => {
+											void triggerPad(nextSound);
+										}}
+										onRemove={(dbId) => {
+											void removeSound(dbId);
+										}}
+										onMove={(dbId, direction) => {
+											void moveSound(dbId, direction);
+										}}
+										onUpdateGain={(dbId, gain) => {
+											void updateGain(dbId, gain);
+										}}
+										onToggleVolumePopover={toggleVolumePopover}
+										onCloseVolumePopover={() => setVolumePopoverId(null)}
+									/>
+								);
+							})}
 
-						{/* Add more pad */}
-						<button
-							onClick={() => setShowAddModal(true)}
-							className="aspect-square rounded-2xl border border-dashed border-white/15 flex flex-col items-center justify-center gap-1.5 text-white/30 hover:text-white/60 hover:border-white/30 transition"
-						>
-							<Icons.Plus className="w-6 h-6" />
-							<span className="text-xs font-medium">Add</span>
-						</button>
+							<button
+								onClick={() => setShowAddModal(true)}
+								className="aspect-square rounded-2xl border border-dashed border-white/15 flex flex-col items-center justify-center gap-1.5 text-white/30 hover:text-white/60 hover:border-white/30 transition"
+							>
+								<Icons.Plus className="w-6 h-6" />
+								<span className="text-[11px] font-medium">Add</span>
+							</button>
+						</div>
 					</div>
 				)}
 			</main>

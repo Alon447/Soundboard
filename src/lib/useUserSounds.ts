@@ -279,7 +279,6 @@ export function useUserSounds() {
 	});
 
 	// ---- Stable callsite API (same shape as before) --------------------------
-
 	return {
 		sounds,
 		loading,
