@@ -29,7 +29,7 @@ export default function VolumePopover({ dbId, gain, onUpdate, onClose }: VolumeP
 			onPointerDown={(event) => event.stopPropagation()}
 		>
 			<div className="flex gap-1">
-				{[ 100, 400, 600, 800].map((value) => (
+				{[ 100, 400, 600, 800, 1000].map((value) => (
 					<button
 						key={value}
 						type="button"
