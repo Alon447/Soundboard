@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Mirror Kiro skills to Claude",
+      "trigger": "Stop",
+      "description": "After every agent execution, copy .kiro/skills to .claude/skills so the two agent-skill trees can never drift out of sync.",
+      "action": {
+        "type": "command",
+        "command": "node scripts/sync-agent-docs.mjs",
+        "timeout": 30
+      }
+    }
+  ]
+}

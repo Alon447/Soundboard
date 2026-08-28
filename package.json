@@ -8,7 +8,9 @@
 		"build": "vite build",
 		"lint": "eslint .",
 		"preview": "vite preview",
-		"typecheck": "tsc --noEmit -p tsconfig.app.json"
+		"typecheck": "tsc --noEmit -p tsconfig.app.json",
+		"docs:sync": "node scripts/sync-agent-docs.mjs",
+		"docs:check": "node scripts/sync-agent-docs.mjs --check"
 	},
 	"dependencies": {
 		"@ffmpeg/core": "^0.12.6",
