@@ -156,13 +156,14 @@ Details worth copying verbatim:
     projectUsers: "Cloud_Services/Project_User_kv",
   } as const;
   ```
-- **Value coercion in one place.** `toSecret()` accepts strings, stringifies numbers and
+- **Value coercion in one place.** `toSecret()` accepts strings and stringifies numbers and
   booleans (because `6543` rather than `"6543"` is what a hand-written local file and Vault
-  both hand back), and comma-joins arrays of scalars. Nested objects and `null` are
-  rejected **by key name**, so the error says which field to fix.
+  both hand back). Nested objects and `null` are rejected **by key name**, so the error says
+  which field to fix. It also comma-joins arrays of scalars — Soundboard does **not** copy
+  that branch: no secret it reads is an array, so it was untested code with no caller.
 - **A path containment check** on the local-file branch, so a secret name cannot traverse
   out of `local_secrets/`.
-- **`LOCAL_SECRETS_DIR` resolved two levels up from `src/utils`, not three** — the
+- **`LOCAL_SECRETS_DIR` resolved two levels up from `backend/src/utils`, not three** — the
   container copies `backend/` to `/app`, so anything above the backend root points outside
   the image. That comment is the kind of thing you only learn by breaking it once.
 - **Resolve secrets at call time, never at import.** `pg.ts` is explicit about why: "the

@@ -11,6 +11,31 @@ Import with the `@/` alias, not deep relative paths. One React component per fil
 
 Validate app changes with `npm run build` and `npm run typecheck`.
 
+## Write less code, and almost no comments
+
+Every line has to earn its place. Prefer deleting to adding.
+
+**Comments.** No comment that restates the code. No section-divider banners, no
+docstring on a function whose name and signature already say it. Comment only what the
+code cannot record: a non-obvious constraint, a workaround for external behaviour, or a
+decision a reader would otherwise reverse. One or two lines. Rationale, history and
+rejected alternatives belong in `docs/` — a second copy in source guarantees one of them
+goes stale.
+
+**New code: "nothing calls it yet" is not the test.** This is a migration branch.
+Building Vault, S3, the pool and the auth flow before their consumers exist is the work,
+and `docs/target-architecture.md` names those functions. Ask instead:
+
+- Does `docs/` commit to it, or does a named next step consume it? Build it.
+- Was it invented while writing the file — an extra option, a defensive branch, an input
+  format nobody asked for, a helper added "while we're here"? Cut it. That is the code
+  that gets documented, maintained, and thrown away unused.
+
+No abstraction for a single call site, and no file that exists only to re-export one line.
+
+**Existing verbosity is not a precedent.** When editing an over-commented or over-built
+file, trim rather than match it.
+
 ## Documentation is part of the change, not a follow-up
 
 Any change to architecture, the data or auth layer, schema, storage, dependencies,
@@ -41,8 +66,9 @@ Python, unlike the siblings.
 - **Do not treat RLS as the only authorization.** The client sends `user_id` in
   inserts and deletes with no user filter. Only `auth.uid()` policies make that safe,
   and they will not exist. A valid token proves identity, not permission.
-- **Secrets come from Vault, read directly over KV v2, not from `.env`.** Memoise the
-  derived clients; do not hit Vault per request.
+- **Secrets come from Vault, read directly over KV v2, not from `.env`.** Already built at
+  `backend/src/utils/secrets.ts` — use `getSecret(name, schema?)` and `SECRET_PATHS`, and
+  memoise anything derived from a secret rather than hitting Vault per request.
 - **Do not add new Supabase-specific dependencies** (Storage, realtime, edge
   functions, `auth.*` schema references) without flagging the portability cost.
 - **Do not add anything that needs the public internet at runtime or build time.**

@@ -65,8 +65,8 @@ in yanshuf3's case, secrets into another service; Soundboard does neither. See
 [`house-conventions.md`](./house-conventions.md).
 
 Only four source files talk to Supabase, which is the good news:
-`src/lib/supabase.ts`, `src/lib/useAuth.tsx`, `src/components/AuthPage.tsx`,
-`src/lib/useUserSounds.ts`, `src/lib/useSharedSounds.ts`. See
+`frontend/src/lib/supabase.ts`, `frontend/src/lib/useAuth.tsx`, `frontend/src/components/AuthPage.tsx`,
+`frontend/src/lib/useUserSounds.ts`, `frontend/src/lib/useSharedSounds.ts`. See
 [`supabase-surface-inventory.md`](./supabase-surface-inventory.md) for the exact
 call sites.
 
@@ -130,7 +130,7 @@ the byte-storage choice swappable later. Replace `file_url` / `custom_file_url`
 with an asset reference and derive the URL on the client:
 
 ```ts
-// src/lib/useUserSounds.ts — userSoundToBoard
+// frontend/src/lib/useUserSounds.ts — userSoundToBoard
 audio_path: builtin?.audio_path ?? (row.shared_sound ? `/api/shared-sounds/${row.shared_sound.id}/audio` : '')
 ```
 
@@ -280,18 +280,18 @@ easiest thing to get wrong in this migration.
    (`pg.types.setTypeParser(1700, parseFloat)`). `integer` is parsed to a number,
    so `position` is fine.
 2. **ffmpeg.wasm fetches its core from `unpkg.com`** at runtime
-   (`src/lib/ffmpegConvert.ts`). This is a hard failure in an air-gapped network
+   (`frontend/src/lib/ffmpegConvert.ts`). This is a hard failure in an air-gapped network
    and it has nothing to do with Supabase. `@ffmpeg/core-mt` is already a
-   dependency — copy its `dist/esm` into `public/ffmpeg/` and point `baseURL` there.
+   dependency — copy its `dist/esm` into `frontend/public/ffmpeg/` and point `baseURL` there.
 3. **COOP/COEP headers only exist in dev.** They are injected by a Vite plugin for
    the dev and preview servers. A production nginx/IIS must send
    `Cross-Origin-Opener-Policy: same-origin` and
    `Cross-Origin-Embedder-Policy: require-corp`, or the multi-threaded ffmpeg core
    fails to load.
-4. **Built-in filenames are hostile.** `public/sounds/` contains spaces, `!`, and
+4. **Built-in filenames are hostile.** `frontend/public/sounds/` contains spaces, `!`, and
    curly quotes (`“Fahh” - meme sound effect …mp4`). Vite tolerates them; other
    static servers encode them differently. Rename to ASCII slugs and update
-   `src/lib/sounds.ts` in the same commit.
+   `frontend/src/lib/sounds.ts` in the same commit.
 5. **You must export the bytes before you lose network access.** The signed URLs in
    `file_url` are the only handle you have on the uploaded audio. Once the closed
    environment is cut over, they are gone. Run the export while Supabase is still
@@ -355,18 +355,19 @@ longer needed), `user_sounds` and `shared_sounds` to JSON. Then download every
 `shared_sounds.file_url` and verify byte counts. Nothing here is recoverable later.
 
 **Phase 1 — introduce a seam, no behaviour change.**
-Add `src/lib/api.ts` exposing the operations the hooks need, implemented on top of
+Add `frontend/src/lib/api.ts` exposing the operations the hooks need, implemented on top of
 supabase-js and returning the existing `{ data, error }` shape. Move the
-`UserSound` / `SharedSound` types out of `supabase.ts` into `src/lib/types.ts`.
+`UserSound` / `SharedSound` types out of `supabase.ts` into `frontend/src/lib/types.ts`.
 Switch `userSoundToBoard` to derive `audio_path` from the shared-sound id rather
 than reading `file_url`, and key the decoded-buffer cache in `App.tsx` on the sound
 id instead of the URL. Ship and confirm on Supabase.
 
-**Phase 1.5 — restructure the repository.**
-Move to the `frontend/` + `backend/` + `packages/shared` workspace layout, matching
-yanshuf3's naming. Its own commit, no behaviour change, and much easier to do after
-Phase 1 has consolidated the data layer. Update every path pattern in the steering and
-instruction files, and in `scripts/sync-agent-docs.mjs`, in the same commit.
+**Phase 1.5 — restructure the repository. Done.**
+`frontend/` and `backend/` are npm workspaces matching yanshuf3's naming, with the root
+`package.json` reduced to workspace orchestration. `packages/shared` is deferred until the
+backend needs the `SOUNDS` list to seed a board. The move rewrote 91 `src/` references
+across `docs/`, the skills, steering and instruction files, plus every `fileMatchPattern`
+and `applyTo` glob — exactly the breakage the `docs-sync` skill flagged in advance.
 
 **Phase 2 — stand up the new backend.**
 New migration set with no `auth.` or `storage.` references, the Node API, the secrets
@@ -378,7 +379,7 @@ substitutes — versions, path-style quirks, privilege levels and realm configur
 what will bite.
 
 **Phase 3 — flip the seam.**
-Reimplement `src/lib/api.ts` over `fetch('/api/...')` with
+Reimplement `frontend/src/lib/api.ts` over `fetch('/api/...')` with
 `credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with a
 `GET /api/me` call plus a `login()` that navigates to `/auth/login`, **delete**
 `AuthPage.tsx`, then remove `@supabase/supabase-js`, the `supabase` CLI dev dependency and

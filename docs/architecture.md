@@ -18,7 +18,7 @@ so **every** feature sits behind authentication.
 | Backend | Supabase (GoTrue auth, PostgREST, Storage) |
 | Media conversion | `@ffmpeg/ffmpeg` (ffmpeg.wasm, multi-threaded core) |
 
-Path alias: `@/` maps to `src/`. Use it instead of deep relative imports.
+Path alias: `@/` maps to `frontend/src/`. Use it instead of deep relative imports.
 
 ## Runtime shape
 
@@ -36,14 +36,14 @@ database is never spoken to directly.
 ## The three sound sources
 
 A pad (`user_sounds` row) resolves its audio from exactly one of three places.
-`userSoundToBoard` in `src/lib/useUserSounds.ts` collapses them into one field:
+`userSoundToBoard` in `frontend/src/lib/useUserSounds.ts` collapses them into one field:
 
 ```ts
 audio_path: builtin?.audio_path ?? row.shared_sound?.file_url ?? row.custom_file_url ?? ''
 ```
 
-1. **Built-in** — `sound_id` matches an entry in `src/lib/sounds.ts` (`SOUNDS`).
-   Audio is a static file in `public/sounds/*.mp4`, path is relative (`/sounds/...`).
+1. **Built-in** — `sound_id` matches an entry in `frontend/src/lib/sounds.ts` (`SOUNDS`).
+   Audio is a static file in `frontend/public/sounds/*.mp4`, path is relative (`/sounds/...`).
    Nine of them. On first login they are bulk-inserted as the starter board.
 2. **Shared** — `shared_sound_id` points at a `shared_sounds` row, whose
    `file_url` is a **10-year Supabase signed URL** to a Storage object.
@@ -81,19 +81,19 @@ upload untouched. Then `addCustomSound` does, in order:
 4. insert `user_sounds` pointing at that shared row
 
 ffmpeg.wasm needs `SharedArrayBuffer`, hence the COOP/COEP headers injected by the
-`cross-origin-isolation` plugin in `vite.config.ts`. Those headers are set for the
+`cross-origin-isolation` plugin in `frontend/vite.config.ts`. Those headers are set for the
 dev and preview servers only — a production host must set them itself.
 
 ## Data layer
 
 Two hooks, both react-query, are the *only* things that talk to the database:
 
-- `src/lib/useUserSounds.ts` — the board. One query plus six mutations
+- `frontend/src/lib/useUserSounds.ts` — the board. One query plus six mutations
   (add built-in, add custom, add shared, remove, move, update gain). Remove, move
   and gain are optimistic.
-- `src/lib/useSharedSounds.ts` — the community library. One query.
+- `frontend/src/lib/useSharedSounds.ts` — the community library. One query.
 
-`src/lib/supabase.ts` holds the client plus the only TypeScript mirror of the
+`frontend/src/lib/supabase.ts` holds the client plus the only TypeScript mirror of the
 schema (`UserSound`, `SharedSound`). Those two types are the contract any
 replacement backend has to satisfy.
 
@@ -103,15 +103,19 @@ No realtime subscriptions, no RPC, no edge functions.
 
 | Path | Role |
 | --- | --- |
-| `src/App.tsx` | Layout, keybindings, audio engine, auth guard |
-| `src/lib/useUserSounds.ts` | Every board read/write; audio path resolution |
-| `src/lib/useSharedSounds.ts` | Community library query |
-| `src/lib/supabase.ts` | Client + schema types |
-| `src/lib/useAuth.tsx` | Session context (`getSession`, `onAuthStateChange`, `signOut`) |
-| `src/components/AuthPage.tsx` | Only auth UI; email + password |
-| `src/lib/sounds.ts` | Built-in pad declarations |
-| `src/lib/ffmpegConvert.ts` | Browser-side video → MP3 |
-| `src/store/soundStore.ts` | UI flags + `AudioContext`/buffer cache |
+| `backend/src/utils/secrets.ts` | Vault KV v2 reads, local-file branch, TTL cache |
+| `backend/src/utils/s3.ts` | Memoised S3 client, content-addressed keys, object operations |
+| `backend/src/config/index.ts` | Zod-validated env, exits at boot on anything missing |
+| `backend/src/checkConnectivity.ts` | `npm run api:check` — Vault + S3 self-check |
+| `frontend/src/App.tsx` | Layout, keybindings, audio engine, auth guard |
+| `frontend/src/lib/useUserSounds.ts` | Every board read/write; audio path resolution |
+| `frontend/src/lib/useSharedSounds.ts` | Community library query |
+| `frontend/src/lib/supabase.ts` | Client + schema types |
+| `frontend/src/lib/useAuth.tsx` | Session context (`getSession`, `onAuthStateChange`, `signOut`) |
+| `frontend/src/components/AuthPage.tsx` | Only auth UI; email + password |
+| `frontend/src/lib/sounds.ts` | Built-in pad declarations |
+| `frontend/src/lib/ffmpegConvert.ts` | Browser-side video → MP3 |
+| `frontend/src/store/soundStore.ts` | UI flags + `AudioContext`/buffer cache |
 | `supabase/migrations/*.sql` | Schema, RLS, storage bucket |
 
 ## Known rough edges
@@ -145,6 +149,14 @@ No realtime subscriptions, no RPC, no edge functions.
 - [`supabase-surface-inventory.md`](./supabase-surface-inventory.md) — the
   call-site-by-call-site port checklist.
 
+## Repository layout
+
+An npm workspace: `frontend/` (`@soundboard/frontend`, this SPA) and `backend/`
+(`@soundboard/backend`, Vault + S3 so far). The root `package.json` is workspace
+orchestration only, and all scripts run from there. Paths in this document are relative to
+the repository root, so app code lives under `frontend/src/`. See
+[`target-architecture.md`](./target-architecture.md) for the full tree.
+
 ## Agent configuration
 
 These `docs/` files are the single source of truth. The agent configs point at them
@@ -154,7 +166,7 @@ rather than restating the detail, so guidance does not drift.
 | --- | --- |
 | `.kiro/skills/{supabase-to-postgres,airgap-readiness,docs-sync}/` | Kiro (Agent Skills) |
 | `.kiro/steering/project-context.md` | Kiro, always loaded |
-| `.kiro/steering/backend-portability.md` | Kiro, loaded when editing `src/lib/**`, `supabase/**` |
+| `.kiro/steering/backend-portability.md` | Kiro, loaded when editing `frontend/src/lib/**`, `supabase/**` |
 | `.kiro/hooks/*.json` | Kiro, on session events |
 | `.claude/skills/**` | Claude Code — byte-identical mirror of `.kiro/skills/` |
 | `CLAUDE.md` | Claude Code, always loaded |

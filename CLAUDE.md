@@ -17,16 +17,30 @@ for in-browser video → MP3 conversion. Backend is currently Supabase
 ## Commands
 
 ```bash
-npm run dev         # vite dev server
-npm run build       # production build
-npm run typecheck   # tsc --noEmit -p tsconfig.app.json
-npm run lint        # eslint
-npm run docs:sync   # mirror .kiro/skills -> .claude/skills
-npm run docs:check  # verify that mirror, exit 1 on drift
+npm run dev             # vite dev server (frontend)
+npm run build           # production build (frontend)
+npm run typecheck       # frontend
+npm run typecheck:api   # backend
+npm run typecheck:all   # both
+npm run build:api       # compile backend to backend/dist
+npm run api:check       # backend connectivity self-check: Vault + S3
+npm run secrets:example # create backend/local_secrets/ from the committed templates
+npm run lint            # eslint (frontend only for now)
+npm run docs:sync       # mirror .kiro/skills -> .claude/skills
+npm run docs:check      # verify that mirror, exit 1 on drift
 ```
 
-Run `npm run build` and `npm run typecheck` after any app change. Do not start
-`npm run dev` yourself — it never exits; ask the user to run it.
+Secrets in development: `IS_BLACK_ENV=true` makes `getSecret(name)` read
+`backend/local_secrets/<name>` as JSON, where the secret name is the path
+(`db/postgres/dev` → `backend/local_secrets/db/postgres/dev`). That folder is gitignored;
+`backend/local_secrets.example/` is committed and `npm run secrets:example` copies it into
+place without overwriting anything.
+
+Run `npm run typecheck:all` after any change, plus `npm run build` for frontend changes.
+Do not start `npm run dev` yourself — it never exits; ask the user to run it.
+
+`frontend/src/lib/synth.ts` and `frontend/src/lib/useAuth.tsx` have pre-existing lint failures unrelated to
+current work. eslint does not yet cover `backend/`.
 
 ## Documentation is part of the change, not a follow-up
 
@@ -43,9 +57,24 @@ that applies to the project applies in all three, so update
 When a decision is superseded, rewrite the rule rather than appending a contradiction
 next to it.
 
+## Repository shape
+
+An npm workspace with two packages: `frontend/` (`@soundboard/frontend`, the Vite SPA) and
+`backend/` (`@soundboard/backend`, Vault + S3 so far). The root `package.json` is workspace
+orchestration only. `packages/shared` does not exist yet — it arrives when the backend needs
+the `SOUNDS` list to seed a board. See `docs/target-architecture.md`.
+
+All scripts run from the root; no `cd` needed.
+
+Backend conventions, already established in the code: ESM with `.js` extensions on relative
+imports (NodeNext), `config/` for validated env, `utils/` for integrations, object-first
+logging, Zod at every boundary, and no fallback values for things the architecture
+guarantees. Never log a secret value — log its path.
+
 ## Conventions
 
-- Import via the `@/` alias (`@/lib/useAuth`), never deep relative paths.
+- Import via the `@/` alias (`@/lib/useAuth`), never deep relative paths. Frontend only;
+  the backend uses relative `.js` imports.
 - One React component per file. Shared constants, helpers and types may sit
   alongside in non-component files.
 - Prefer HeroUI for inputs, tabs, buttons and sliders, and match the installed
@@ -53,9 +82,9 @@ next to it.
   overlays, a custom modal shell is acceptable where the HeroUI primitive fights
   the flow.
 - Theme values (colours, surfaces, borders, form controls) belong in
-  `src/index.css` as shared variables, not scattered through components.
-- Built-in pads are declared in `src/lib/sounds.ts`; bundled audio lives in
-  `public/sounds/`, pad images in `public/images/`.
+  `frontend/src/index.css` as shared variables, not scattered through components.
+- Built-in pads are declared in `frontend/src/lib/sounds.ts`; bundled audio lives in
+  `frontend/public/sounds/`, pad images in `frontend/public/images/`.
 - Keep mp3 and mp4 support working when touching playback.
 - Auth today is Supabase email + password. The target is Keycloak SSO via a server-side
   code flow **in our own backend**, setting an httpOnly cookie. No OIDC library in the
@@ -64,6 +93,31 @@ next to it.
 - Schema changes go in `supabase/migrations/` while still on Supabase, applied with
   `npx supabase db push`. New schema for the target stack goes in `db/migrations/`.
 - Keep changes minimal and scoped to what was asked.
+
+## Write less code, and almost no comments
+
+Every line has to earn its place. Prefer deleting to adding.
+
+**Comments.** No comment that restates the code. No section-divider banners, no
+docstring on a function whose name and signature already say it. Comment only what the
+code cannot record: a non-obvious constraint, a workaround for external behaviour, or a
+decision a reader would otherwise reverse. One or two lines. Rationale, history and
+rejected alternatives belong in `docs/` — a second copy in source guarantees one of them
+goes stale.
+
+**New code: "nothing calls it yet" is not the test.** This is a migration branch.
+Building Vault, S3, the pool and the auth flow before their consumers exist is the work,
+and `docs/target-architecture.md` names those functions. Ask instead:
+
+- Does `docs/` commit to it, or does a named next step consume it? Build it.
+- Was it invented while writing the file — an extra option, a defensive branch, an input
+  format nobody asked for, a helper added "while we're here"? Cut it. That is the code
+  that gets documented, maintained, and thrown away unused.
+
+No abstraction for a single call site, and no file that exists only to re-export one line.
+
+**Existing verbosity is not a precedent.** When editing an over-commented or over-built
+file, trim rather than match it.
 
 ## The migration that shapes all backend work
 
@@ -130,7 +184,7 @@ Skills in `.claude/skills/`:
 
 ## Traps worth knowing up front
 
-- `src/lib/ffmpegConvert.ts` fetches its wasm core from `unpkg.com` at runtime.
+- `frontend/src/lib/ffmpegConvert.ts` fetches its wasm core from `unpkg.com` at runtime.
   Breaks offline, and breaks only *video* uploads, so it passes a casual smoke test.
 - COOP/COEP headers are set by a Vite plugin for dev and preview only. Production
   needs them or `SharedArrayBuffer` is undefined and ffmpeg-mt fails to load.
@@ -147,6 +201,6 @@ Skills in `.claude/skills/`:
 - `moveSound` runs two racing `UPDATE`s rather than one transaction.
 - Nothing ever deletes an upload's bytes or its `shared_sounds` row.
 - No client-side upload size limit exists; the only cap was Storage's 50 MiB.
-- `public/sounds/` filenames contain spaces, `!` and curly quotes.
+- `frontend/public/sounds/` filenames contain spaces, `!` and curly quotes.
 - `YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code.
 - `.env` contains a committed Supabase anon key. Do not print it; it needs rotating.

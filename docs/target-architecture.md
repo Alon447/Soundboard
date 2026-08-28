@@ -282,24 +282,32 @@ objects; Soundboard needs one.
 ### Client configuration
 
 `@aws-sdk/client-s3` **v3** — not the `aws-sdk` v2 monolith both siblings use, which is
-EOL. **Credentials come from Vault**, and the client is memoised:
+EOL. **Credentials come from Vault**, and the client is memoised. Implemented in
+`backend/src/utils/s3.ts`:
 
 ```ts
-let client: S3Client | null = null;
-
-export async function getS3(): Promise<S3Client> {
-  if (client) return client;
-  const { S3_DOMAIN, S3_ACCESS_ID, S3_SECRET_KEY } =
-    await getSecret<S3Secret>(SECRET_PATHS.s3);
-  client = new S3Client({
-    endpoint: S3_DOMAIN,
-    region: config.S3_REGION,   // dummy value; the API still requires one
-    forcePathStyle: true,       // confirmed required by both siblings
-    credentials: { accessKeyId: S3_ACCESS_ID, secretAccessKey: S3_SECRET_KEY },
-  });
-  return client;
-}
+export async function getStorage(): Promise<{ client: S3Client; bucket: string; endpoint: string }>
 ```
+
+which builds, once:
+
+```ts
+new S3Client({
+  endpoint: S3_DOMAIN,         // from the secret; the Zod schema requires a full URL
+  region: config.S3_REGION,    // dummy value; the SDK refuses to sign without one
+  forcePathStyle: true,        // verified on the wire: PUT /<bucket>/<key>
+  credentials: { accessKeyId: S3_ACCESS_ID, secretAccessKey: S3_SECRET_KEY },
+});
+```
+
+Alongside it: `buildObjectKey(sha256Hex, ext)` and `sha256Hex(bytes)` for content-addressed
+keys, and `putObject` / `getObjectStream` / `getObjectBytes` / `objectExists` /
+`deleteObject`. `objectExists` maps a 404 to `false` and rethrows anything else.
+`getObjectStream` is the one the audio route should use; `getObjectBytes` buffers and is
+fine for short clips.
+
+The module also sets `AWS_EC2_METADATA_DISABLED=true` at import, belt-and-braces on top of
+the explicit credentials, so the SDK can never wander into an EC2 metadata timeout.
 
 This is the one place hana2trino has **not** been brought in line: its S3 client still
 hardcodes the access key, secret key, endpoint host and bucket name as string literals, and
@@ -320,32 +328,43 @@ microservice — that is yanshuf3's older approach and it means an extra process
 hana2trino's `backend/src/utils/secrets.ts` is the model: a self-contained TypeScript
 module, ~150 lines, with a local-file branch for development.
 
-```ts
-export async function getSecret<Fields extends Secret = Secret>(name: string): Promise<Fields> {
-  const secret = config.IS_BLACK_ENV ? await readFromFile(name) : await readFromVault(name);
-  return secret as Fields;
-}
+Implemented in `backend/src/utils/secrets.ts`:
 
-// readFromVault:
-const res = await axios.get(`${config.VAULT_PATH.replace(/\/+$/, "")}/data/${name}`, {
-  headers: { "X-Vault-Token": config.VAULT_TOKEN, Accept: "application/json" },
-  timeout: 5_000,
-});
-const data = (res.data as { data?: { data?: unknown } })?.data?.data;  // KV v2 double nesting
+```ts
+export async function getSecret<Fields extends Secret = Secret>(
+  name: string,
+  schema?: ZodType<Fields>,
+): Promise<Fields>
 ```
+
+The Vault leg uses **native `fetch` with `AbortSignal.timeout`**, not axios. hana2trino
+uses axios; dropping it means one less package to mirror into the Nexus registry, which is
+worth more here than matching the sibling line-for-line.
+
+```ts
+const res = await fetch(`${config.VAULT_PATH.replace(/\/+$/, '')}/data/${name}`, {
+  headers: { 'X-Vault-Token': config.VAULT_TOKEN, Accept: 'application/json' },
+  signal: AbortSignal.timeout(config.VAULT_TIMEOUT_MS),
+});
+const data = (await res.json() as { data?: { data?: unknown } })?.data?.data;  // KV v2 nests twice
+```
+
+The optional Zod schema is the preferred way to read a secret — the bare type argument is
+a cast and nothing more. `SECRET_PATHS` and `postgresSecretPath()` are exported so callers
+never write a path string.
 
 Copy these details:
 
 - **`SECRET_PATHS` as an `as const` object**, so a mistyped path is a compile error.
 - **Coerce values in one place.** Accept strings, stringify numbers and booleans (a port
   written `6543` rather than `"6543"` is normal in both a hand-written local file and
-  Vault), comma-join scalar arrays, and reject nested objects and `null` **by key name** so
-  the error says which field to fix.
+  Vault), and reject nested objects, arrays and `null` **by key name** so the error says
+  which field to fix.
 - **Containment-check the local-file path**, so a secret name cannot escape
   `local_secrets/`.
 - **Resolve at call time, never at import**, so the process boots with Vault unreachable.
 - **`local_secrets/` sits at the backend root**, resolved two levels up from
-  `src/utils` — the container copies `backend/` to `/app`, so three levels would point
+  `backend/src/utils` — the container copies `backend/` to `/app`, so three levels would point
   outside the image.
 
 Paths for Soundboard:
@@ -364,19 +383,22 @@ environment means a Vault round-trip per database call."* It buys secret rotatio
 restart, which is genuinely useful, but Soundboard's audio endpoint cannot pay a Vault round
 trip per request.
 
-Take the middle path:
+The middle path, as implemented:
 
-- **Memoise the derived clients** — one `pg.Pool` and one `S3Client`, built lazily on first
-  use and reused. hana2trino builds *two brand-new pools on every call* and never closes
-  them, which exhausts connections under load. Do not copy that.
-- **Give the secret read a TTL** (a few minutes) so a rotated secret is picked up without a
-  restart and without per-request cost.
-- **Zod-parse each secret** at the boundary. The generic type argument in the original is
-  explicitly not validated at runtime, so a missing field surfaces later as a driver error.
+- **A TTL cache** (`SECRET_TTL_MS`, default 5 minutes) so a rotated secret is picked up
+  without a restart and without per-request cost.
+- **Concurrent misses share one in-flight request**, so a burst at startup does not fan out
+  into N identical Vault calls.
+- **The derived clients are memoised** — `getStorage()` builds one `S3Client` and reuses it;
+  `resetStorage()` exists for credential rotation. When the `pg.Pool` lands it must work the
+  same way. hana2trino builds *two brand-new pools on every call* and never closes them,
+  which exhausts connections under load. Do not copy that.
+- **Zod-parse at the boundary.** The generic type argument alone is not validated at
+  runtime, so a missing field would surface later as a driver error.
 - **Fail fast on the ones that matter.** `s3` and `db/postgres/<env>` are both critical;
-  there are no optional secrets here, so a failure to load either should stop startup.
-  yanshuf3's `secretsCache.ts` is worth reading for how it separates optional from critical
-  (`logger.fatal` plus throw for a secret the server cannot start without).
+  there are no optional secrets here. yanshuf3's `secretsCache.ts` is worth reading for how
+  it separates optional from critical (`logger.fatal` plus throw for a secret the server
+  cannot start without) if optional ones ever appear.
 
 | Path | Contents |
 | --- | --- |
@@ -387,8 +409,33 @@ Take the middle path:
 Note yanshuf3's equivalent path is misspelled `idp/keycloack/...`; do not copy the typo, and
 confirm the exact path when the secret is provisioned.
 
-In development these are JSON files under `local_secrets/`, gitignored and distributed
-out of band.
+### Local secrets when `IS_BLACK_ENV=true`
+
+Outside the closed environment there is no Vault, so `getSecret(name)` reads
+`backend/local_secrets/<name>` and parses it as JSON. The secret *name* is the path, so
+`db/postgres/dev` is a file at `backend/local_secrets/db/postgres/dev` — nested directories,
+no file extension. This is the same convention as both sibling projects.
+
+`local_secrets/` is **gitignored and never committed**. To make the required file names and
+shapes discoverable without shipping real credentials, `backend/local_secrets.example/` is
+committed with the same tree and throwaway localhost values:
+
+```
+npm run secrets:example      # copies the example tree into local_secrets/, skipping anything present
+npm run api:check            # confirms every secret parses and S3 round-trips
+```
+
+The scaffold never overwrites an existing file, so it is safe to re-run after editing. In the
+closed environment you do not run it at all.
+
+Two safeguards in the file branch: the resolved path is checked for containment, so a secret
+name cannot traverse out of `local_secrets/`; and a missing file produces an error naming both
+the expected path and `IS_BLACK_ENV`, because "cannot read secret" with no path is the least
+useful message available.
+
+`local_secrets.example/` is a small deliberate addition — hana2trino documents the required
+files in its `.env.example` prose instead. A committed example tree makes the shapes
+copy-pasteable and keeps the scaffold script honest.
 
 Environment variables are then only for non-secret wiring:
 
@@ -431,12 +478,12 @@ soundboard/
 ├── docker-compose.yaml          # postgres + minio + vault for local dev
 ├── frontend/
 │   ├── index.html
-│   ├── vite.config.ts           # @ -> ./src, /api + /auth proxies, COOP/COEP plugin
+│   ├── frontend/vite.config.ts           # @ -> ./src, /api + /auth proxies, COOP/COEP plugin
 │   ├── nginx.conf               # prod: SPA + immutable /assets/ + COOP/COEP
 │   ├── public/                  # sounds/, images/, ffmpeg/ (vendored wasm core)
-│   └── src/                     # unchanged internally
+│   └── frontend/src/                     # unchanged internally
 ├── backend/
-│   └── src/
+│   └── frontend/src/
 │       ├── index.ts             # bootstrap, ordered startup, graceful shutdown
 │       ├── config/              # Zod-validated env
 │       ├── controllers/         # HTTP shape
@@ -447,7 +494,7 @@ soundboard/
 │       └── utils/               # secrets.ts, s3.ts, pg.ts, oidc.ts, logger.ts
 ├── local_secrets/               # dev only, gitignored, one JSON file per secret path
 ├── packages/shared/
-│   └── src/
+│   └── frontend/src/
 │       ├── types.ts             # UserSound, SharedSound, BoardSound
 │       └── builtinSounds.ts     # the SOUNDS list
 ├── db/migrations/               # versioned .sql — deliberately unlike yanshuf3
@@ -459,8 +506,8 @@ soundboard/
 
 Two things genuinely have to be shared, and both currently live in the frontend:
 
-- **`SOUNDS`** (`src/lib/sounds.ts`) — the API needs it for first-login seeding.
-- **`UserSound` / `SharedSound`** (`src/lib/supabase.ts`) — the API produces these
+- **`SOUNDS`** (`frontend/src/lib/sounds.ts`) — the API needs it for first-login seeding.
+- **`UserSound` / `SharedSound`** (`frontend/src/lib/supabase.ts`) — the API produces these
   shapes, the frontend consumes them.
 
 Reaching across `frontend/` ↔ `backend/` without a package boundary means either
@@ -482,12 +529,69 @@ treats its live database as schema truth and snapshots it for reference. Soundbo
 already has versioned migrations, and a closed environment needs a repeatable,
 reviewable path.
 
-**Not yet done.** The layout is agreed but nothing has moved. It is high-churn with no
-behavioural payoff, so it lands as its own commit — ideally after the Phase 1
-`src/lib/api.ts` seam, since a smaller better-factored surface is easier to move. What
-changes with it: the Vite alias, the tsconfig layout, `SOURCE`/`TARGET` in
-`scripts/sync-agent-docs.mjs`, and every `src/lib/**` pattern in `.kiro/steering/*.md`
-and `.github/instructions/*`. Same commit — see the `docs-sync` skill.
+### Current state
+
+The workspace split is **done**. `packages/shared` and `db/migrations/` do not exist yet.
+
+```
+soundboard/
+├── package.json                    # workspace root only: workspaces + orchestration scripts
+├── package-lock.json               # one lockfile
+├── frontend/                       # @soundboard/frontend
+│   ├── package.json
+│   ├── index.html
+│   ├── vite.config.ts              # @ -> ./src, /api + /auth proxy, COOP/COEP plugin
+│   ├── tsconfig.json               # + tsconfig.app.json, tsconfig.node.json
+│   ├── eslint.config.js
+│   ├── tailwind.config.js          # + postcss.config.js
+│   ├── .env                        # VITE_SUPABASE_* for now
+│   ├── public/                     # sounds/, images/
+│   └── src/                        # unchanged internally; @/ still resolves here
+├── backend/                        # @soundboard/backend
+│   ├── package.json
+│   ├── tsconfig.json               # ES2022 / NodeNext / strict
+│   ├── .env.example
+│   ├── local_secrets.example/      # committed templates, dummy localhost values
+│   ├── local_secrets/              # gitignored, created by `npm run secrets:example`
+│   ├── scripts/scaffoldLocalSecrets.mjs
+│   └── src/
+│       ├── config/index.ts         # Zod-validated env, exits on anything missing
+│       ├── checkConnectivity.ts    # `npm run api:check`
+│       └── utils/
+│           ├── secrets.ts          # Vault KV v2 + local-file branch + TTL cache
+│           ├── s3.ts               # memoised v3 client, content-addressed keys
+│           ├── envCheck.ts         # isBlackEnv()
+│           └── logger.ts           # dependency-free structured logging
+├── supabase/migrations/            # current Supabase schema
+└── docs/  .kiro/  .claude/  .github/  scripts/
+```
+
+The root `package.json` is no longer a package in its own right. It holds the workspace list,
+the orchestration scripts, and the two dev dependencies both sides share (`typescript`,
+`tsx`) plus the `supabase` CLI and `typescript-eslint`.
+
+Still pending from the target layout: `packages/shared`, for the `SOUNDS` list and the row
+types. It arrives when the backend needs to seed a board — until then there is nothing to
+share and an empty package would be ceremony.
+
+### Scripts
+
+Everything is driven from the root; nothing needs a `cd`.
+
+| Command | Effect |
+| --- | --- |
+| `npm run dev` | Vite dev server on 3000, proxying `/api` and `/auth` to 3001 |
+| `npm run build` | frontend production build to `frontend/dist` |
+| `npm run lint` | eslint, frontend |
+| `npm run typecheck` / `typecheck:api` / `typecheck:all` | frontend / backend / both |
+| `npm run build:api` | compile the backend to `backend/dist` |
+| `npm run api:check` | connectivity self-check: reads every secret, round-trips an object through S3 |
+| `npm run secrets:example` | create `backend/local_secrets/` from the committed templates |
+| `npm run docs:sync` / `docs:check` | mirror and verify `.claude/skills` |
+
+`api:check` is the first thing to run in a new environment. It reports field *names* from
+each secret but never values, and its failure output names the likely misconfiguration —
+untrusted CA, expired token, wrong mount, virtual-host-style DNS failure.
 
 ## Dev and production
 

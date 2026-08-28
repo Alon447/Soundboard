@@ -86,8 +86,10 @@ contradiction next to it.
 - the file inventory tables in `docs/architecture.md`
 - `SOURCE` / `TARGET` in `scripts/sync-agent-docs.mjs`
 
-The planned move to `frontend/` + `backend/` + `packages/shared/` will invalidate every
-`src/lib/**` pattern in this repo. Update them in the same commit as the move.
+The `frontend/` + `backend/` workspace split has happened, and it invalidated 91 `src/`
+references plus every `fileMatchPattern` and `applyTo` glob in the repo. They were rewritten
+in the same commit. The remaining move — adding `packages/shared/` — will do the same again
+on a smaller scale, so check these four places when it lands.
 
 **Record decisions, not just outcomes.** When a choice is made between real
 alternatives, note what was rejected and why. `docs/backend-portability.md` is the

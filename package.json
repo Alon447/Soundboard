@@ -1,46 +1,30 @@
 {
-	"name": "vite-react-typescript-starter",
+	"name": "soundboard",
 	"private": true,
 	"version": "0.0.0",
 	"type": "module",
+	"workspaces": [
+		"frontend",
+		"backend"
+	],
 	"scripts": {
-		"dev": "vite",
-		"build": "vite build",
-		"lint": "eslint .",
-		"preview": "vite preview",
-		"typecheck": "tsc --noEmit -p tsconfig.app.json",
+		"dev": "npm run dev -w @soundboard/frontend",
+		"build": "npm run build -w @soundboard/frontend",
+		"preview": "npm run preview -w @soundboard/frontend",
+		"lint": "npm run lint -w @soundboard/frontend",
+		"typecheck": "npm run typecheck -w @soundboard/frontend",
+		"build:api": "npm run build -w @soundboard/backend",
+		"typecheck:api": "npm run typecheck -w @soundboard/backend",
+		"typecheck:all": "npm run typecheck && npm run typecheck:api",
+		"api:check": "npm run check:connectivity -w @soundboard/backend",
+		"secrets:example": "npm run secrets:example -w @soundboard/backend",
 		"docs:sync": "node scripts/sync-agent-docs.mjs",
 		"docs:check": "node scripts/sync-agent-docs.mjs --check"
 	},
-	"dependencies": {
-		"@ffmpeg/core": "^0.12.6",
-		"@ffmpeg/core-mt": "^0.12.6",
-		"@ffmpeg/ffmpeg": "^0.12.10",
-		"@ffmpeg/util": "^0.12.1",
-		"@heroui/react": "^3.2.4",
-		"@supabase/supabase-js": "^2.112.3",
-		"@tanstack/react-query": "^5.101.4",
-		"lucide-react": "^0.446.0",
-		"react": "^19.2.8",
-		"react-dom": "^19.2.8",
-		"zustand": "^5.0.15"
-	},
 	"devDependencies": {
-		"@eslint/js": "^9.9.1",
-		"@tailwindcss/vite": "^4.3.3",
-		"@types/react": "^19.2.18",
-		"@types/react-dom": "^19.2.4",
-		"@vitejs/plugin-react": "^6.0.5",
-		"eslint": "^9.9.1",
-		"eslint-plugin-react-hooks": "^5.1.0-rc.0",
-		"eslint-plugin-react-refresh": "^0.4.11",
-		"globals": "^15.9.0",
-		"postcss": "^8.4.35",
 		"supabase": "^2.114.0",
-		"tailwindcss": "^4.3.3",
 		"tsx": "^4.23.12",
 		"typescript": "^5.5.3",
-		"typescript-eslint": "^8.3.0",
-		"vite": "^8.2.1"
+		"typescript-eslint": "^8.3.0"
 	}
 }

@@ -20,7 +20,7 @@ project asset. Do not commit the audio.
   it. Until that point it is the only copy.
 
 The one exception: if some uploaded clips are genuinely house sounds that everyone
-should get by default, promote *those* into `public/sounds/` and declare them in the
+should get by default, promote *those* into `frontend/public/sounds/` and declare them in the
 built-in `SOUNDS` list. That is a deliberate product decision about a handful of files,
 not a way to store user uploads.
 

@@ -217,7 +217,7 @@ route to a `302` — but key the buffer cache on the sound id first.
 Keep `{ data, error }` so the react-query hooks need no restructuring:
 
 ```ts
-// src/lib/api.ts
+// frontend/src/lib/api.ts
 type Result<T> = { data: T | null; error: { message: string } | null };
 
 async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> {
@@ -263,7 +263,7 @@ id, which keeps the storage layer private.
 
 - Set `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp` on the HTML response, or ffmpeg.wasm's
-  multi-threaded core fails. `vite.config.ts` only covers dev and preview, and
+  multi-threaded core fails. `frontend/vite.config.ts` only covers dev and preview, and
   yanshuf3's nginx does not set them because nothing there needs isolation.
 - **Secrets come from Vault, read directly over KV v2, not from `.env`** —
   `getSecret('s3')`, `getSecret('db/postgres/<env>')`,

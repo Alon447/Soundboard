@@ -1,0 +1,8 @@
+{
+  "host": "localhost",
+  "database": "soundboard",
+  "user": "soundboard",
+  "password": "soundboard",
+  "readPort": 5432,
+  "writePort": 5432
+}

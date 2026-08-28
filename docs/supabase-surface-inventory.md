@@ -9,11 +9,11 @@ There are **no** realtime subscriptions, `.rpc()` calls, or edge functions.
 
 | Call site | Supabase API |
 | --- | --- |
-| `src/lib/useAuth.tsx` | `supabase.auth.getSession()` on mount |
-| `src/lib/useAuth.tsx` | `supabase.auth.onAuthStateChange(cb)` + `subscription.unsubscribe()` |
-| `src/lib/useAuth.tsx` | `supabase.auth.signOut()` |
-| `src/components/AuthPage.tsx` | `supabase.auth.signInWithPassword({ email, password })` |
-| `src/components/AuthPage.tsx` | `supabase.auth.signUp({ email, password })` |
+| `frontend/src/lib/useAuth.tsx` | `supabase.auth.getSession()` on mount |
+| `frontend/src/lib/useAuth.tsx` | `supabase.auth.onAuthStateChange(cb)` + `subscription.unsubscribe()` |
+| `frontend/src/lib/useAuth.tsx` | `supabase.auth.signOut()` |
+| `frontend/src/components/AuthPage.tsx` | `supabase.auth.signInWithPassword({ email, password })` |
+| `frontend/src/components/AuthPage.tsx` | `supabase.auth.signUp({ email, password })` |
 
 `useAuth` exposes `{ user, session, loading, signOut }`. Session persistence and
 token refresh are supabase-js defaults (localStorage + auto refresh); nothing
@@ -39,7 +39,7 @@ did implicitly is map the Keycloak `upn` claim onto the existing Supabase user i
 
 ## Database — 11 calls, 2 tables
 
-All in `src/lib/useUserSounds.ts` unless noted.
+All in `frontend/src/lib/useUserSounds.ts` unless noted.
 
 | Purpose | Call |
 | --- | --- |
@@ -105,12 +105,12 @@ primary keys** — notably none on `user_sounds.user_id`.
 
 ## Client config
 
-- `src/lib/supabase.ts` reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`,
+- `frontend/src/lib/supabase.ts` reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`,
   throwing if either is missing. Both live in `.env`, which is committed with a
   real anon key — rotate it.
-- `src/vite-env.d.ts` has no typed `ImportMetaEnv`, so adding env vars needs no
+- `frontend/src/vite-env.d.ts` has no typed `ImportMetaEnv`, so adding env vars needs no
   type changes.
-- `vite.config.ts` has nothing Supabase-specific, but does set COOP/COEP for
+- `frontend/vite.config.ts` has nothing Supabase-specific, but does set COOP/COEP for
   ffmpeg.wasm and excludes `@ffmpeg/*` from `optimizeDeps`.
 - Dependencies to drop at the end: `@supabase/supabase-js`, and the `supabase` CLI dev
   dependency. **Nothing is added on the web side** — the cookie session means no OIDC
@@ -129,11 +129,11 @@ and comparisons. Either change the column to `double precision` or call
 
 ## Unrelated to Supabase but blocks a closed environment
 
-- `src/lib/ffmpegConvert.ts` loads its wasm core from
+- `frontend/src/lib/ffmpegConvert.ts` loads its wasm core from
   `https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm` at runtime.
 - COOP/COEP headers exist only in the Vite dev/preview middleware.
 - `index.html` references `https://bolt.new/static/og_default.png` for `og:image`
   (inert, but an external reference).
-- `src/components/add-sound/constants.ts` has `YOUTUBE_SERVER =
+- `frontend/src/components/add-sound/constants.ts` has `YOUTUBE_SERVER =
   'http://localhost:3001'`, used only by the unreferenced `YouTubeSoundPanel.tsx`.
-- `public/sounds/` filenames contain spaces, `!` and curly quotes.
+- `frontend/public/sounds/` filenames contain spaces, `!` and curly quotes.

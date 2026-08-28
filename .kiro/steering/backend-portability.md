@@ -1,6 +1,6 @@
 ---
 inclusion: fileMatch
-fileMatchPattern: ["src/lib/**", "supabase/**", "src/components/AuthPage.tsx", "backend/**", "frontend/src/lib/**", "packages/shared/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/house-conventions.md"]
+fileMatchPattern: ["backend/**", "frontend/src/lib/**", "frontend/src/components/AuthPage.tsx", "supabase/**", "db/**", "packages/shared/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/house-conventions.md"]
 ---
 
 # You are editing the portability-critical layer
@@ -44,12 +44,13 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    this wrong orphans every existing board — and fails silently, because the user just
    sees a freshly seeded empty board.
 
-4a. **Secrets come from Vault, read directly over KV v2**, not `.env`: `getSecret('s3')`,
-   `getSecret('db/postgres/<env>')`, `getSecret('idp/keycloak/soundboard')`. Port
-   hana2trino's `backend/src/utils/secrets.ts`. Env vars carry non-secret wiring plus
-   `VAULT_TOKEN`, Zod-validated at boot with no fallback values. **Memoise the derived
-   clients** — one `pg.Pool`, one `S3Client` — rather than reading Vault per request the
-   way hana2trino does, and never build a new pool per call the way its `pg.ts` does.
+4a. **Secrets come from Vault — already built.** `backend/src/utils/secrets.ts` provides
+   `getSecret(name, schema?)`, `SECRET_PATHS` and `invalidateSecret`; it reads Vault KV v2
+   directly, falls back to `backend/local_secrets/` when `IS_BLACK_ENV`, and caches for
+   `SECRET_TTL_MS`. Do not rewrite it, do not add a second way to read secrets, and never
+   put a credential in `.env` or in source. **Memoise anything derived from a secret** —
+   `backend/src/utils/s3.ts` shows the shape; when the `pg.Pool` lands it must be one pool,
+   not hana2trino's pool-per-call.
 
 5. **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject`
    first, then the rows in one transaction, so a failure leaves a harmless orphaned
@@ -93,7 +94,7 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
 
 ## Also remember
 
-`src/lib/ffmpegConvert.ts` fetches its wasm core from `unpkg.com` at runtime — a hard
+`frontend/src/lib/ffmpegConvert.ts` fetches its wasm core from `unpkg.com` at runtime — a hard
 failure offline, unrelated to Supabase. The AWS SDK's default credential chain probes
 EC2 metadata and will hang in a closed network. See the `airgap-readiness` skill.
 

@@ -26,5 +26,7 @@ dist-ssr
 # Never commit these — see .kiro/skills/supabase-to-postgres/references/data-migration.md
 export/
 
-# Secrets fetched from the vault service in development
+# Local secret files, read by getSecret() when IS_BLACK_ENV=true. Never committed.
+# Run `npm run secrets:example` to create them from backend/local_secrets.example/,
+# which IS committed and documents the file names and shapes each environment needs.
 local_secrets/

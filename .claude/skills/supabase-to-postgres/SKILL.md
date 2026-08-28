@@ -1,6 +1,6 @@
 ---
 name: supabase-to-postgres
-description: Port the Soundboard app off Supabase (GoTrue auth, PostgREST, Storage) onto the closed-environment stack — PostgreSQL for data, S3 for audio bytes, Keycloak for auth, and a Node API tying them together. Use when working on auth, the data layer, sound storage, migrations, the API, the workspace layout, or anything about running this app on-prem. Also use when touching src/lib/useUserSounds.ts, src/lib/useSharedSounds.ts, src/lib/supabase.ts, src/lib/useAuth.tsx, src/components/AuthPage.tsx, or supabase/migrations.
+description: Port the Soundboard app off Supabase (GoTrue auth, PostgREST, Storage) onto the closed-environment stack — PostgreSQL for data, S3 for audio bytes, Keycloak for auth, and a Node API tying them together. Use when working on auth, the data layer, sound storage, migrations, the API, the workspace layout, or anything about running this app on-prem. Also use when touching frontend/src/lib/useUserSounds.ts, frontend/src/lib/useSharedSounds.ts, frontend/src/lib/supabase.ts, frontend/src/lib/useAuth.tsx, frontend/src/components/AuthPage.tsx, or supabase/migrations.
 ---
 
 # Porting Soundboard off Supabase
@@ -63,7 +63,7 @@ signed URL is exactly why the current data cannot move. Store an asset reference
 derive the URL client-side:
 
 ```ts
-// src/lib/useUserSounds.ts — userSoundToBoard
+// frontend/src/lib/useUserSounds.ts — userSoundToBoard
 audio_path: builtin?.audio_path
   ?? (row.shared_sound ? `/api/shared-sounds/${row.shared_sound.id}/audio` : '')
 ```
@@ -133,6 +133,23 @@ as a JSON number; `node-postgres` returns it as a **string**. Alternatively
 **Enforce an upload size limit on both client and server.** There is none today; the
 only limit was Supabase Storage's 50 MiB and it disappears.
 
+## Already built
+
+The `backend/` workspace exists with the infrastructure layers done, so do not rewrite
+these — extend them:
+
+| Module | Provides |
+| --- | --- |
+| `backend/src/config/index.ts` | Zod-validated env; exits at boot listing every problem |
+| `backend/src/utils/secrets.ts` | `getSecret(name, schema?)` over Vault KV v2, local-file branch for `IS_BLACK_ENV`, TTL cache, `SECRET_PATHS`, `invalidateSecret` |
+| `backend/src/utils/s3.ts` | `getStorage()` memoised client, `buildObjectKey`, `sha256Hex`, put/get/head/delete |
+| `backend/src/utils/envCheck.ts` | `isBlackEnv()` |
+| `backend/src/utils/logger.ts` | object-first structured logging, no dependencies |
+| `backend/src/checkConnectivity.ts` | `npm run api:check` — reads every secret, round-trips an object through S3 |
+
+Still to come: the `pg.Pool` (one pool, memoised, `SELECT 1` at startup — not hana2trino's
+pool-per-call), the migrations in `db/migrations/`, the OIDC routes, and the HTTP layer.
+
 ## Order of work
 
 Each phase builds and typechecks on its own. No big-bang cutover.
@@ -141,23 +158,22 @@ Each phase builds and typechecks on its own. No big-bang cutover.
    still reachable. Those signed URLs are the only handle on the bytes. Export
    `auth.users` emails too: the identity mapping needs them. See
    `references/data-migration.md`.
-2. **Seam** — add `src/lib/api.ts` with the operations the hooks need, still over
+2. **Seam** — add `frontend/src/lib/api.ts` with the operations the hooks need, still over
    supabase-js, returning the existing `{ data, error }` shape. Move `UserSound` /
-   `SharedSound` into `src/lib/types.ts`. Derive `audio_path` from the shared-sound
+   `SharedSound` into `frontend/src/lib/types.ts`. Derive `audio_path` from the shared-sound
    id. Key the decoded-buffer cache in `App.tsx` on the sound id rather than the URL
    — cheap now, awkward later, and it keeps presigned URLs available as an option.
    Ship on Supabase and confirm no regression.
-3. **Restructure** — move to `frontend/` + `backend/` + `packages/shared`, matching
-   yanshuf3's workspace naming. Own commit, no behaviour change. Update every path
-   pattern in `.kiro/steering/*.md`, `.github/instructions/*` and
-   `scripts/sync-agent-docs.mjs` in the same commit.
+3. ~~**Restructure**~~ — **done.** `frontend/` and `backend/` are npm workspaces; the root
+   `package.json` is orchestration only. `packages/shared` is deferred until the backend
+   needs the `SOUNDS` list.
 4. **Backend** — migrations from `references/target-schema.sql`, the API from
    `references/api-contract.md`, the secrets module, the S3 client, the OIDC routes and
    per-request verification. **Build `IS_BLACK_ENV` mock mode first**, so the whole thing is
    developable with neither Keycloak nor Vault reachable. Import the captured data. Then
    test against the real PostgreSQL, S3, Vault and Keycloak — versions, path-style quirks,
    privileges and realm config are what will bite, not logic.
-5. **Flip** — reimplement `src/lib/api.ts` over `fetch` with
+5. **Flip** — reimplement `frontend/src/lib/api.ts` over `fetch` with
    `credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with
    `GET /api/me` plus a `login()` that navigates to `/auth/login`, **delete**
    `AuthPage.tsx`, then
@@ -170,11 +186,11 @@ Each phase builds and typechecks on its own. No big-bang cutover.
 Changing them turns a contained port into a rewrite.
 
 ```ts
-// src/lib/useAuth.tsx — same shape, Keycloak underneath
+// frontend/src/lib/useAuth.tsx — same shape, Keycloak underneath
 { user: { id: string; email?: string; user_metadata?: { name?: string } } | null,
   session: unknown | null, loading: boolean, signOut: () => Promise<void> }
 
-// src/lib/useUserSounds.ts — the exported hook API
+// frontend/src/lib/useUserSounds.ts — the exported hook API
 { sounds: BoardSound[], loading, error,
   addBuiltinSound, addCustomSound, addSharedSound,
   removeSound, moveSound, updateGain, refetch }

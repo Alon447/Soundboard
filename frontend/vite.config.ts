@@ -32,6 +32,15 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    port: 3000,
+    proxy: {
+      // Both go to our own backend — there is no separate auth process.
+      // Same-origin in dev too, so COOP/COEP and the audio fetch behave as in production.
+      '/api': { target: 'http://127.0.0.1:3001', changeOrigin: true },
+      '/auth': { target: 'http://127.0.0.1:3001', changeOrigin: true },
+    },
+  },
   optimizeDeps: {
     exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/core', '@ffmpeg/core-mt'],
   },

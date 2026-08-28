@@ -1,5 +1,5 @@
 ---
-applyTo: "src/lib/ffmpegConvert.ts,vite.config.ts,index.html,src/lib/sounds.ts,src/components/add-sound/**,public/**,frontend/vite.config.ts,frontend/nginx.conf,backend/src/utils/**,backend/src/config/**,Dockerfile*,docker-compose*.yaml"
+applyTo: "frontend/src/lib/ffmpegConvert.ts,frontend/src/lib/sounds.ts,frontend/src/components/add-sound/**,frontend/vite.config.ts,frontend/index.html,frontend/nginx.conf,frontend/public/**,backend/src/utils/**,backend/src/config/**,Dockerfile*,docker-compose*.yaml"
 description: "Offline / air-gapped deployment blockers: the ffmpeg.wasm core fetched from unpkg.com, COOP/COEP headers, external references, asset filenames, upload size limits, the S3 client's metadata probe, and Keycloak issuer-URL mismatches."
 ---
 
@@ -15,7 +15,7 @@ API, S3 and Keycloak are in play.
 
 ## 1. ffmpeg.wasm loads its core from unpkg.com — hard failure
 
-`src/lib/ffmpegConvert.ts`:
+`frontend/src/lib/ffmpegConvert.ts`:
 
 ```ts
 const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
@@ -27,7 +27,7 @@ to miss.
 
 `@ffmpeg/core-mt` is already a dependency. Copy
 `node_modules/@ffmpeg/core-mt/dist/esm/{ffmpeg-core.js,ffmpeg-core.wasm,ffmpeg-core.worker.js}`
-into `public/ffmpeg/`, point `baseURL` at `/ffmpeg`, and add an npm script wired
+into `frontend/public/ffmpeg/`, point `baseURL` at `/ffmpeg`, and add an npm script wired
 into `prebuild` so it cannot drift on the next `npm install`. Keep `toBlobURL` —
 the worker still needs a blob URL under `COEP: require-corp`.
 
@@ -35,7 +35,7 @@ Test with devtools set to offline, not by reading the code.
 
 ## 2. COOP/COEP headers only exist in dev
 
-`vite.config.ts` sets `Cross-Origin-Opener-Policy: same-origin` and
+`frontend/vite.config.ts` sets `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp` via `configureServer` and
 `configurePreviewServer` only. Production gets neither, so `SharedArrayBuffer` is
 undefined and the multi-threaded ffmpeg core will not load.
@@ -56,18 +56,18 @@ apart from the ffmpeg core.
 
 Existing references: the unpkg URL above (must fix), `https://bolt.new/static/og_default.png`
 as `og:image` in `index.html` (inert, remove for tidiness), and
-`YOUTUBE_SERVER = 'http://localhost:3001'` in `src/components/add-sound/constants.ts`
+`YOUTUBE_SERVER = 'http://localhost:3001'` in `frontend/src/components/add-sound/constants.ts`
 (dead code, delete).
 
-Before shipping, grep `src/` and `index.html` for `https?://` and load the built app
+Before shipping, grep `frontend/src/` and `index.html` for `https?://` and load the built app
 with devtools offline. Anything that 404s in the network panel is a blocker.
 
 ## 4. Built-in audio filenames are hostile
 
-`public/sounds/` contains spaces, `!`, parentheses and curly quotes, e.g.
+`frontend/public/sounds/` contains spaces, `!`, parentheses and curly quotes, e.g.
 `“Fahh” - meme sound effect - Sound effects (1080p).mp4`. Vite's dev server tolerates
 them; nginx, IIS and proxies encode and normalise differently. Rename to ASCII slugs
-and update `audio_path` in `src/lib/sounds.ts` in the same commit.
+and update `audio_path` in `frontend/src/lib/sounds.ts` in the same commit.
 
 **Do not change `sound_id` values** — they are stored in the database and identify
 existing pads.
@@ -78,6 +78,26 @@ No client-side size check exists anywhere, and `extractAudioFromVideo` reads the
 whole file into wasm memory, so a large `.mkv` can hang the tab before any upload.
 The only limit was Supabase Storage's 50 MiB, which disappears with Supabase. Add a
 check in `UploadSoundPanel` before conversion, and enforce it server-side too.
+
+## 0. Diagnose with `npm run api:check` first
+
+`backend/src/checkConnectivity.ts` reads every secret and round-trips an object through S3,
+naming the likely misconfiguration on failure. It prints secret field *names* only, never
+values. Run it before debugging anything else in a new environment.
+
+Two details in it worth copying into any similar script:
+
+- **Node reports a refused connection as an `AggregateError` with an empty `message`.** The
+  detail is in `error.errors[]`, one entry per address family. Printing `error.message`
+  alone prints nothing for the most common failure there is.
+- **Build the report as one string and write it with a single `process.stdout.write`.**
+  `console.*` calls after a failed AWS SDK call were observed producing no output on either
+  stream. Set `process.exitCode` rather than calling `process.exit()`, which can truncate a
+  pending write.
+
+The Vault and S3 layers are already implemented — see
+`.github/instructions/supabase-to-postgres.instructions.md`. Extend them rather than adding
+a parallel path.
 
 ## 6. S3 client — two traps that hang rather than fail
 
@@ -112,7 +132,7 @@ host and Keycloak agree on the time, because clock skew rejects valid tokens via
 ## 8. Base path, TLS, and offline builds
 
 - Serving from a subpath needs `base` in the Vite config, and note that `assetPath()`
-  and `src/lib/sounds.ts` produce `/`-rooted absolute paths that break under a
+  and `frontend/src/lib/sounds.ts` produce `/`-rooted absolute paths that break under a
   subpath. Prefer the domain root.
 - `SharedArrayBuffer` requires a secure context, so **HTTPS is mandatory** for the
   upload flow anywhere but `localhost`. The cert must be trusted by the environment,

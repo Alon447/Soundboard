@@ -30,6 +30,32 @@ applies in all three, so `.kiro/steering/`, `CLAUDE.md` and this file get update
 together. When a decision is superseded, rewrite the rule rather than appending a
 contradiction next to it.
 
+## Repository shape and commands
+
+An npm workspace with two packages: `frontend/` (`@soundboard/frontend`, the Vite SPA) and
+`backend/` (`@soundboard/backend`, Vault + S3 so far). The root `package.json` is workspace
+orchestration only. `packages/shared` does not exist yet. All scripts run from the root.
+
+```bash
+npm run dev             # Vite on 3000, proxying /api and /auth to the backend on 3001
+npm run typecheck:all   # frontend + backend
+npm run api:check       # backend connectivity self-check: Vault + S3
+npm run secrets:example # create backend/local_secrets/ from the committed templates
+npm run build:api       # compile backend
+npm run docs:check      # verify the .claude/skills mirror
+```
+
+Secrets in development: `IS_BLACK_ENV=true` makes `getSecret(name)` read
+`backend/local_secrets/<name>` as JSON, where the secret name is the path. That folder is
+gitignored; `backend/local_secrets.example/` is committed and `npm run secrets:example`
+copies it into place.
+
+Backend conventions, already set by the existing code: ESM with `.js` extensions on relative
+imports (NodeNext), `config/` for Zod-validated env, `utils/` for integrations, object-first
+logging, and no fallback values for things the architecture guarantees. Never log a secret
+value — log its path. `frontend/src/lib/synth.ts` and `frontend/src/lib/useAuth.tsx` have pre-existing lint
+failures unrelated to current work; eslint does not yet cover `backend/`.
+
 ## Conventions
 
 - The board lives in Supabase (`user_sounds`, `shared_sounds`) and requires sign-in.
@@ -42,12 +68,12 @@ contradiction next to it.
   restart the dev server after changing it.
 - Schema changes go in `supabase/migrations` while still on Supabase, applied with
   `npx supabase db push`.
-- Built-in pads are declared in `src/lib/sounds.ts`; bundled audio lives in
-  `public/sounds` and pad images in `public/images`.
+- Built-in pads are declared in `frontend/src/lib/sounds.ts`; bundled audio lives in
+  `frontend/public/sounds` and pad images in `frontend/public/images`.
 - Prefer mp3 and mp4 support when working on playback behavior.
 - Prefer HeroUI components for app UI, but match the installed HeroUI API exactly
   instead of mixing patterns from other component libraries.
-- Define and reuse shared app theme variables in `src/index.css` for HeroUI-facing
+- Define and reuse shared app theme variables in `frontend/src/index.css` for HeroUI-facing
   colors, surfaces, borders, and form controls instead of scattering ad-hoc colors
   through components.
 - Prefer HeroUI for inputs, tabs, buttons, and sliders. For overlays, use a custom
@@ -55,10 +81,35 @@ contradiction next to it.
   proves unreliable in this app.
 - Keep one React component per file. Shared constants, helpers, and types may live
   alongside them in non-component files.
-- Import project modules with the `@/` alias (maps to `src/`) instead of deep
+- Import project modules with the `@/` alias (maps to `frontend/src/`) instead of deep
   relative paths.
 - Keep changes minimal and validate with `npm run build` and `npm run typecheck`
   when app code changes.
+
+## Write less code, and almost no comments
+
+Every line has to earn its place. Prefer deleting to adding.
+
+**Comments.** No comment that restates the code. No section-divider banners, no
+docstring on a function whose name and signature already say it. Comment only what the
+code cannot record: a non-obvious constraint, a workaround for external behaviour, or a
+decision a reader would otherwise reverse. One or two lines. Rationale, history and
+rejected alternatives belong in `docs/` — a second copy in source guarantees one of them
+goes stale.
+
+**New code: "nothing calls it yet" is not the test.** This is a migration branch.
+Building Vault, S3, the pool and the auth flow before their consumers exist is the work,
+and `docs/target-architecture.md` names those functions. Ask instead:
+
+- Does `docs/` commit to it, or does a named next step consume it? Build it.
+- Was it invented while writing the file — an extra option, a defensive branch, an input
+  format nobody asked for, a helper added "while we're here"? Cut it. That is the code
+  that gets documented, maintained, and thrown away unused.
+
+No abstraction for a single call site, and no file that exists only to re-export one line.
+
+**Existing verbosity is not a precedent.** When editing an over-commented or over-built
+file, trim rather than match it.
 
 ## Active constraint: migrating off Supabase
 
@@ -99,7 +150,7 @@ wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
 
 ## Known traps
 
-- `src/lib/ffmpegConvert.ts` loads its wasm core from `unpkg.com` at runtime — a hard
+- `frontend/src/lib/ffmpegConvert.ts` loads its wasm core from `unpkg.com` at runtime — a hard
   failure offline, and it only breaks *video* uploads, so it is easy to miss.
 - COOP/COEP headers are set by a Vite plugin for dev and preview only. Production
   must send them or `SharedArrayBuffer` is undefined and ffmpeg-mt fails.

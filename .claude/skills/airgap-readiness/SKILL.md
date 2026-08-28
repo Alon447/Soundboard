@@ -9,14 +9,15 @@ Closed-environment failure modes that are **not** about porting off Supabase. Mo
 them look like unrelated bugs, and several fail in ways that pass a casual smoke
 test. Treat this as its own phase of work.
 
-Sections 1 to 5 apply to the app as it stands today. Sections 6 to 12 apply once the
-Node backend, S3, Keycloak and Vault are in play — see
+Sections 1 to 5 apply to the frontend as it stands today. Sections 6 to 13 cover the
+backend, S3, Keycloak and Vault — the secrets and storage layers are built, the rest is
+pending. See
 `docs/target-architecture.md` for the design and `docs/house-conventions.md` for the
 sibling projects that have already solved most of them.
 
 ## 1. ffmpeg.wasm loads its core from unpkg.com — hard failure
 
-`src/lib/ffmpegConvert.ts` does this at runtime:
+`frontend/src/lib/ffmpegConvert.ts` does this at runtime:
 
 ```ts
 const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
@@ -29,7 +30,7 @@ which makes this easy to miss in testing.
 `@ffmpeg/core-mt` is already a dependency. Vendor it:
 
 1. Copy `node_modules/@ffmpeg/core-mt/dist/esm/{ffmpeg-core.js,ffmpeg-core.wasm,ffmpeg-core.worker.js}`
-   into `public/ffmpeg/`.
+   into `frontend/public/ffmpeg/`.
 2. Change `baseURL` to `/ffmpeg`.
 3. Add an npm script so it cannot drift on the next `npm install`, and wire it into
    `prebuild`.
@@ -41,7 +42,7 @@ Test with devtools throttling set to offline, not just by reading the code.
 
 ## 2. COOP/COEP headers only exist in dev
 
-`vite.config.ts` has a `cross-origin-isolation` plugin that sets
+`frontend/vite.config.ts` has a `cross-origin-isolation` plugin that sets
 `Cross-Origin-Opener-Policy: same-origin` and
 `Cross-Origin-Embedder-Policy: require-corp` — but only via `configureServer` and
 `configurePreviewServer`. **A production host gets neither.** Without them
@@ -69,20 +70,20 @@ Current state:
 
 | Reference | File | Impact |
 | --- | --- | --- |
-| `https://unpkg.com/@ffmpeg/core-mt@…` | `src/lib/ffmpegConvert.ts` | breaks video upload — fix it |
+| `https://unpkg.com/@ffmpeg/core-mt@…` | `frontend/src/lib/ffmpegConvert.ts` | breaks video upload — fix it |
 | `https://bolt.new/static/og_default.png` | `index.html` `og:image` | inert; remove for tidiness |
-| `http://localhost:3001` (`YOUTUBE_SERVER`) | `src/components/add-sound/constants.ts` | dead code, delete it |
+| `http://localhost:3001` (`YOUTUBE_SERVER`) | `frontend/src/components/add-sound/constants.ts` | dead code, delete it |
 
 Fonts and icons are safe: `lucide-react` ships SVG components in the bundle, and
 there is no webfont link. Tailwind 4 builds at compile time.
 
-Before shipping, re-check with a grep for `https?://` across `src/` and
+Before shipping, re-check with a grep for `https?://` across `frontend/src/` and
 `index.html`, and load the built app with devtools offline. Anything that 404s in
 the network panel is a blocker.
 
 ## 4. Built-in audio filenames are hostile
 
-`public/sounds/` contains spaces, `!`, parentheses, and curly quotes:
+`frontend/public/sounds/` contains spaces, `!`, parentheses, and curly quotes:
 
 ```
 Get out sound effect!! - YSL (360p).mp4
@@ -91,7 +92,7 @@ Get out sound effect!! - YSL (360p).mp4
 
 Vite's dev server tolerates them. nginx, IIS, and proxies encode and normalise
 differently, and the curly quotes are non-ASCII. Rename them to ASCII slugs
-(`get-out.mp4`, `fahh.mp4`) and update `audio_path` in `src/lib/sounds.ts` in the
+(`get-out.mp4`, `fahh.mp4`) and update `audio_path` in `frontend/src/lib/sounds.ts` in the
 same commit. `sound_id` values must not change — those are stored in the database
 and identify existing pads.
 
@@ -189,9 +190,9 @@ auth stack is undevelopable. The same flag switches storage from S3 to local Min
 ## 8. Base path and static hosting
 
 If the app is served from a subpath (`https://intranet/soundboard/`), set `base`
-in `vite.config.ts`. Note that `assetPath()` in
-`src/components/soundboard/soundboardUtils.ts` builds absolute `/`-rooted paths and
-`src/lib/sounds.ts` hardcodes `/sounds/...`, so both break under a subpath. Serving
+in `frontend/vite.config.ts`. Note that `assetPath()` in
+`frontend/src/components/soundboard/soundboardUtils.ts` builds absolute `/`-rooted paths and
+`frontend/src/lib/sounds.ts` hardcodes `/sounds/...`, so both break under a subpath. Serving
 from the domain root avoids the problem entirely — prefer that.
 
 The SPA needs a history fallback to `index.html`, though with a single route this
@@ -245,7 +246,30 @@ Also:
 - The house rule for WASM and other fetched artefacts is **vendor them into the image**,
   never fetch at runtime. That is the same conclusion as section 1's ffmpeg core.
 
-## 11. Secrets come from Vault, read directly
+## 11. Diagnose with `npm run api:check`, and beware vanishing error output
+
+`backend/src/checkConnectivity.ts` is the first thing to run in a new environment. It reads
+every secret, round-trips a small object through S3, and reports the likely
+misconfiguration on failure. It prints secret *field names* only, never values, so it is
+safe to run against production.
+
+Two hard-won details in it, both worth copying into anything similar:
+
+**Node reports a refused connection as an `AggregateError` with an empty `message`.** When
+every address family is refused — the normal case for `localhost` with IPv4 and IPv6 — the
+useful information is in `error.errors[]`, one entry per address, and `error.message` is the
+empty string. A diagnostic that prints `error.message` prints *nothing at all* for the most
+common failure there is. Walk `errors[]` and the `cause` chain, and fall back to
+`error.name`.
+
+**Build the report as one string and write it with a single `process.stdout.write`.** During
+development, `console.log`/`console.error` calls placed after a failed AWS SDK call produced
+no output on either stream — the report simply disappeared while the process still exited
+with the right code. One atomic write avoids the problem and also stops the report
+interleaving with the structured logger. Set `process.exitCode` rather than calling
+`process.exit()`, which can truncate a pending write.
+
+## 12. Secrets come from Vault, read directly
 
 The closed environment runs HashiCorp Vault. Read it **straight from the Node process over
 the KV v2 HTTP API** — no intermediary service. hana2trino's
@@ -262,6 +286,10 @@ const data = (res.data as { data?: { data?: unknown } })?.data?.data;  // KV v2 
 with an `IS_BLACK_ENV` branch reading `local_secrets/<name>` as JSON. yanshuf3's older
 approach put a Python microservice in front of Vault; that is one more process to image,
 mirror and keep alive in a closed network, for no benefit.
+
+**Built**, in `backend/src/utils/secrets.ts`, using **native `fetch` + `AbortSignal.timeout`**
+rather than axios — one less package to mirror into Nexus. Dev secrets live in
+`backend/local_secrets/`, one JSON file per path, gitignored.
 
 Why this matters for air-gap readiness specifically: there is **no `.env` file to distribute
 to the closed environment**, and no secret material in the repository or the image. In
@@ -295,7 +323,7 @@ fallback values for things the architecture guarantees.
 Vault also needs the internal CA — see the TLS section. hana2trino uses
 `rejectUnauthorized: false` on its Vault agent; use `NODE_EXTRA_CA_CERTS` instead.
 
-## 12. `IS_BLACK_ENV` must not be a privilege switch
+## 13. `IS_BLACK_ENV` must not be a privilege switch
 
 One boolean meaning "am I outside the closed environment". Copy hana2trino's Node
 implementation from `backend/src/config/index.ts` and `backend/src/utils/envCheck.ts`:
@@ -321,7 +349,7 @@ nobody can debug from a desk.
 
 Frontend and assets:
 
-- [ ] ffmpeg core served from `public/ffmpeg/`, `baseURL` updated, no unpkg reference
+- [ ] ffmpeg core served from `frontend/public/ffmpeg/`, `baseURL` updated, no unpkg reference
 - [ ] `crossOriginIsolated === true` on the production host
 - [ ] COOP + COEP set by the production server, not just Vite
 - [ ] devtools offline: no failed network requests, video upload still converts

@@ -157,7 +157,7 @@ create index user_sounds_user_position_idx on user_sounds (user_id, position);
 --
 -- Replaces PostgREST's embedded join
 --   .select('*, shared_sound:shared_sounds(*)')
--- src/lib/useUserSounds.ts reads row.shared_sound?.<field>, so the joined
+-- frontend/src/lib/useUserSounds.ts reads row.shared_sound?.<field>, so the joined
 -- columns must be re-nested into an object, not flattened.
 --
 -- Note it deliberately exposes neither asset_id nor any URL. The client builds

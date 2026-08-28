@@ -1,5 +1,5 @@
 ---
-applyTo: "src/lib/**,supabase/**,src/components/AuthPage.tsx,backend/**,frontend/src/lib/**,packages/shared/**,db/**"
+applyTo: "backend/**,frontend/src/lib/**,frontend/src/components/AuthPage.tsx,supabase/**,db/**,packages/shared/**"
 description: "Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3, Keycloak and HashiCorp Vault in a closed environment."
 ---
 
@@ -28,6 +28,26 @@ S3/disk and only metadata in `storage.objects`. And browsers cannot speak the
 PostgreSQL wire protocol. Supabase was supplying an entire HTTP layer; porting means
 rebuilding it, not swapping a database. So the answer to "can we just point it at our
 PostgreSQL" is no.
+
+## Already built — extend, do not rewrite
+
+The `backend/` workspace exists with the infrastructure layers done:
+
+- `backend/src/config/index.ts` — Zod-validated env, exits at boot listing every problem
+- `backend/src/utils/secrets.ts` — `getSecret(name, schema?)` over Vault KV v2, local-file
+  branch for `IS_BLACK_ENV`, TTL cache, `SECRET_PATHS`, `invalidateSecret`
+- `backend/src/utils/s3.ts` — `getStorage()` memoised client, `buildObjectKey`, `sha256Hex`,
+  put/get/head/delete
+- `backend/src/utils/envCheck.ts`, `backend/src/utils/logger.ts`
+- `backend/src/checkConnectivity.ts` — `npm run api:check`
+
+**Do not add a second way to read secrets or build an S3 client.** Still to come: the
+`pg.Pool` (one pool, memoised, `SELECT 1` at startup), `db/migrations/`, the OIDC routes and
+the HTTP layer.
+
+Backend conventions already set by that code: ESM with `.js` extensions on relative imports
+(NodeNext), Zod at every boundary, object-first logging, never log a secret value, and no
+fallback values for things the architecture guarantees.
 
 ## Rules
 
@@ -105,17 +125,16 @@ No big-bang cutover.
 1. **Capture** the rows *and* download every `file_url` while Supabase is still
    reachable — those signed URLs are the only handle on the bytes. Export user emails
    too; the identity mapping needs them.
-2. **Seam**: add `src/lib/api.ts` over supabase-js returning the same
+2. **Seam**: add `frontend/src/lib/api.ts` over supabase-js returning the same
    `{ data, error }` shape. Derive `audio_path` from the shared-sound id. Key the
    buffer cache on the sound id. Ship on Supabase first.
-3. **Restructure** to `frontend/` + `backend/` + `packages/shared` (matching yanshuf3),
-   own commit, updating every path pattern in `.kiro/steering/`,
-   `.github/instructions/` and `scripts/sync-agent-docs.mjs`.
+3. ~~**Restructure**~~ — **done.** `frontend/` and `backend/` are npm workspaces; the root
+   `package.json` is orchestration only. `packages/shared` is deferred.
 4. **Backend**: migrations with no `auth.`/`storage.` references, the Node API, the secrets
    module, the S3 client, the OIDC routes and per-request verification. Build
    `IS_BLACK_ENV` mock mode first so this is developable with neither Keycloak nor Vault
    reachable. Test against the real PostgreSQL, S3, Vault and Keycloak.
-5. **Flip**: `src/lib/api.ts` over `fetch` with `credentials: 'same-origin'`, `useAuth`
+5. **Flip**: `frontend/src/lib/api.ts` over `fetch` with `credentials: 'same-origin'`, `useAuth`
    onto `GET /api/me` plus a `login()` that navigates to `/auth/login`, **delete**
    `AuthPage.tsx`, remove `@supabase/supabase-js`. No OIDC library in the frontend —
    `openid-client` is backend-only.
