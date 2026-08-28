@@ -23,20 +23,29 @@ What the environment provides, and what each piece replaces:
 | --- | --- |
 | PostgreSQL | PostgREST-backed tables |
 | S3-compatible object storage | Supabase Storage |
-| Keycloak, via a cookie BFF | GoTrue |
-| a vault service | secrets that would otherwise sit in `.env` |
-| a Node process | the glue: ownership checks, S3 proxying, seeding |
+| Keycloak | GoTrue |
+| HashiCorp Vault (KV v2) | secrets that would otherwise sit in `.env` |
+| a Node process | the OIDC flow, ownership checks, S3 proxying, seeding |
 
-**`../yanshuf3` already runs on this exact stack**, against the same Keycloak and the
-same S3. Read `docs/yanshuf3-conventions.md` before designing anything — most of the
-decisions are already made there, and a second app in the same environment doing auth
-and storage differently is a tax on whoever operates both.
+**Soundboard adds exactly one process.** Vault and Keycloak are spoken to directly over
+HTTP. No auth sidecar, no vault microservice, no Python — unlike the sibling projects, which
+split both out.
+
+**Two sibling projects already run on this exact stack** — `../yanshuf3` and
+`../yanshuf3-Hana2Trino`, against the same Keycloak, S3 and vault. Read
+`docs/house-conventions.md` before designing anything: most decisions are already made
+there, and a third app doing auth and storage differently is a tax on whoever operates
+all three.
+
+The one that matters most: hana2trino has **no Python at all** and still does Keycloak auth
+and reads Vault directly. Soundboard goes one step further and keeps the OIDC flow in its
+own backend rather than a sidecar.
 
 Documents, in the order they are useful:
 
 - `docs/target-architecture.md` — the decided design. Start here.
-- `docs/yanshuf3-conventions.md` — the reference implementation: copy list, do-not-copy
-  list, and the gaps it does not cover.
+- `docs/house-conventions.md` — the reference implementations: copy list, do-not-copy
+  list, and the gaps they do not cover.
 - `docs/backend-portability.md` — why, and what was rejected.
 - `docs/supabase-surface-inventory.md` — every call site, as a checklist.
 - `docs/architecture.md` — how the app works today.
@@ -85,9 +94,32 @@ environment), and it differs from the Supabase user id already in
 boards. Getting this wrong orphans every board — and fails silently, because the user
 just sees a freshly seeded empty board.
 
-**Secrets come from the vault service, not `.env`.** `getSecret('s3')`,
-`getSecret('db/postgres/<env>')`, `getSecret('idp/keycloack/soundboard')`. Env vars are
-for non-secret wiring only, validated with Zod at boot with no fallback values.
+**Secrets come from Vault, read directly, not from `.env`.** `getSecret('s3')`,
+`getSecret('db/postgres/<env>')`, `getSecret('idp/keycloak/soundboard')`. Env vars carry
+non-secret wiring plus `VAULT_TOKEN` — the one credential that cannot itself come from
+Vault — validated with Zod at boot with no fallback values.
+
+Port hana2trino's `backend/src/utils/secrets.ts`: a self-contained TypeScript module hitting
+the KV v2 API (`GET {VAULT_PATH}/data/{name}` with an `X-Vault-Token` header, payload at
+`body.data.data`), with an `IS_BLACK_ENV` branch reading `local_secrets/<name>`. Keep its
+`SECRET_PATHS` `as const` object, its value coercion, and its rule of resolving at call time
+rather than at import so the process boots with Vault unreachable.
+
+**But memoise the derived clients** — one `pg.Pool` and one `S3Client`, built lazily and
+reused, with a TTL on the secret read. hana2trino reads Vault on every call and builds two
+new pools per `getPGConnection()`, closing neither.
+
+**Verify tokens properly.** Both sibling projects get this wrong: hana2trino uses
+`jsonwebtoken.decode()` (no signature check, `exp` never compared to the clock) and never
+tests the sidecar's `ok` field; yanshuf3 skips audience validation and passes no clock
+tolerance. Use `jose` + `createRemoteJWKSet`, checking `iss`, `aud` and `exp` with a small
+`clockTolerance`.
+
+**`IS_BLACK_ENV` must not grant privileges.** Copy hana2trino's Zod-coerced boolean and
+`isBlackEnv()` helper, but only for identity mocking, MinIO-instead-of-S3 and
+`local_secrets/`. In hana2trino the same flag also grants `IT: true`, so one mistyped env
+var is an auth bypass with admin rights. Ownership checks must behave identically in both
+modes.
 
 **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject` first,
 then insert the rows in one transaction. A failure then leaves an orphaned object,
@@ -120,14 +152,15 @@ Each phase builds and typechecks on its own. No big-bang cutover.
    pattern in `.kiro/steering/*.md`, `.github/instructions/*` and
    `scripts/sync-agent-docs.mjs` in the same commit.
 4. **Backend** — migrations from `references/target-schema.sql`, the API from
-   `references/api-contract.md`, the S3 client, the vault client, and session
-   validation. Import the captured data. Test against the real PostgreSQL, S3 and
-   Keycloak — versions, path-style quirks, privileges and realm config are what will
-   bite, not logic. Build `IS_BLACK_ENV` mock mode first so this is developable
-   offline.
+   `references/api-contract.md`, the secrets module, the S3 client, the OIDC routes and
+   per-request verification. **Build `IS_BLACK_ENV` mock mode first**, so the whole thing is
+   developable with neither Keycloak nor Vault reachable. Import the captured data. Then
+   test against the real PostgreSQL, S3, Vault and Keycloak — versions, path-style quirks,
+   privileges and realm config are what will bite, not logic.
 5. **Flip** — reimplement `src/lib/api.ts` over `fetch` with
    `credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with
-   `GET /api/me` plus a redirect-to-BFF `login()`, **delete** `AuthPage.tsx`, then
+   `GET /api/me` plus a `login()` that navigates to `/auth/login`, **delete**
+   `AuthPage.tsx`, then
    delete `@supabase/supabase-js` and the `VITE_SUPABASE_*` vars. No OIDC client
    library gets added.
 6. **Harden** — see the `airgap-readiness` skill.
@@ -153,16 +186,16 @@ need no changes at all. Note `user.id` is the **local** id, not the Keycloak cla
 
 `BoardSound.audio_path` must stay a plain fetchable, Web-Audio-decodable URL.
 
-## The trap the cookie BFF exists to avoid
+## The trap the cookie session exists to avoid
 
 `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers. If
 `/api/shared-sounds/:id/audio` required `Authorization: Bearer <token>`, **uploaded
 sounds would stop playing while built-ins kept working** — because built-ins are static
 files. Easy to misdiagnose as a storage problem.
 
-Cookies are sent automatically, which is one of the three reasons the design uses a BFF
-rather than SPA-side PKCE. **Do not add a bearer-only route for audio later**; it
-reopens exactly this.
+Cookies are sent automatically, which is one of the three reasons the design uses a
+server-side flow with a cookie rather than SPA-side PKCE with a bearer token. **Do not add a
+bearer-only route for audio later**; it reopens exactly this.
 
 ## Bugs to fix while you are in here
 
@@ -182,9 +215,11 @@ Do not port these forward.
 
 Ask rather than assume:
 
-- **Is `auth-service` shared infrastructure or per-app?** If shared, Soundboard writes
-  no auth code at all. If per-app, stand up a copy or verify tokens in-process. Top
-  question.
+- **A Keycloak client registration for Soundboard**, with `client_secret` at
+  `idp/keycloak/soundboard` in Vault, plus the allowed redirect and post-logout redirect
+  URIs. The only dependency the no-sidecar decision adds.
+- **The Vault mount path, and how `VAULT_TOKEN` reaches the container** — its TTL and
+  whether it needs renewing.
 - Which S3 implementation (MinIO, Ceph RGW, StorageGRID, ECS)? yanshuf3 never names it.
   A dedicated bucket or a prefix in a shared one? Credentials provisioned? Backup and
   retention policy on it?
@@ -212,6 +247,7 @@ For an imported user specifically: confirm their pre-migration board appears. If
 not, the identity mapping is wrong — check `app_users.upn` was attached to the existing
 row rather than a new row being created.
 
-Also verify the failure modes, which are where this design differs from the old one:
-stop the BFF and confirm the app shows a retry rather than a redirect loop, and confirm
-`IS_BLACK_ENV` mock mode still exercises the full cookie path with no Keycloak running.
+Also verify the failure modes, which are where this design differs from the old one: make
+Keycloak unreachable and confirm the app shows a retry rather than a redirect loop, and
+confirm `IS_BLACK_ENV` mock mode exercises the full cookie path with neither Keycloak nor
+Vault running.

@@ -1,11 +1,12 @@
 # Moving Soundboard off Supabase
 
 Target: a closed / air-gapped environment with no Supabase and no outbound internet.
-What it *does* have: **PostgreSQL, S3-compatible object storage, Keycloak, and a vault
-service**, plus the ability to run Node and Python processes.
+What it *does* have: **PostgreSQL, S3-compatible object storage, Keycloak, and HashiCorp
+Vault**, plus the ability to run a Node process.
 
-It also already runs `../yanshuf3` on that stack, which is the single most useful fact
-in this document — see [`yanshuf3-conventions.md`](./yanshuf3-conventions.md).
+It also already runs `../yanshuf3` and `../yanshuf3-Hana2Trino` on that stack, which is
+the single most useful fact in this document — see
+[`house-conventions.md`](./house-conventions.md).
 
 This document is the analysis: what breaks, which options were considered, and why. The
 decisions it arrives at are written up as a concrete design in
@@ -14,10 +15,12 @@ rather than the reasoning.
 
 > This document has been revised twice as the environment became clearer. The first
 > revision assumed PostgreSQL was the *only* thing available and recommended audio in a
-> `bytea` column with hand-rolled password auth. The second added S3 and Keycloak. The
-> third replaced SPA-side PKCE with a cookie BFF after finding that a sibling project
-> already does it that way. Rejected options are kept deliberately — "why not `bytea`"
-> and "why not just use PKCE in the SPA" are questions that will come up again.
+> `bytea` column with hand-rolled password auth. The second added S3 and Keycloak. The third
+> replaced SPA-side PKCE with a server-side cookie flow after finding that both sibling
+> projects already work that way. The fourth moved that flow out of a separate sidecar and
+> into our own backend, and switched secrets from a vault microservice to reading Vault
+> directly. Rejected options are kept deliberately — "why not `bytea`", "why not PKCE in the
+> SPA" and "why not a sidecar" all come up again.
 
 ## Short answer to "can the way we store sounds keep working?"
 
@@ -46,14 +49,20 @@ providing": auth, data access, and file serving.**
 
 | Supabase piece | Used for | Replacement |
 | --- | --- | --- |
-| GoTrue (`auth.*`) | email/password signup, login, session, `auth.users` table | **Keycloak** via OIDC, plus a local `app_users` mirror table |
+| GoTrue (`auth.*`) | email/password signup, login, session, `auth.users` table | **Keycloak**, code flow in our own backend, plus a local `app_users` mirror |
 | PostgREST (`from(...)`) | 11 query shapes over 2 tables | own Node API (or self-hosted PostgREST) |
 | Storage (`storage.*`) | upload + long-lived signed URL for audio bytes | **S3 bucket**, object key stored in PostgreSQL |
 | RLS + `auth.uid()` | the *only* thing stopping cross-user reads/writes | ownership checks in the API layer (mandatory, see below) |
+| project env vars / anon key | client and server credentials | **HashiCorp Vault**, read directly over KV v2 |
 
-Keycloak and S3 between them remove the two hardest parts of the original plan:
-writing auth from scratch, and finding somewhere for bytes to live. What remains is
-the data API, which is the part that was always going to have to be written.
+Keycloak and S3 between them remove the two hardest parts of the original plan: writing
+auth from scratch, and finding somewhere for bytes to live. Vault removes the third —
+somewhere to keep credentials. What remains is the data API, which was always going to have
+to be written.
+
+All of it lands in **one Node process**. The sibling projects split auth into a sidecar and,
+in yanshuf3's case, secrets into another service; Soundboard does neither. See
+[`house-conventions.md`](./house-conventions.md).
 
 Only four source files talk to Supabase, which is the good news:
 `src/lib/supabase.ts`, `src/lib/useAuth.tsx`, `src/components/AuthPage.tsx`,
@@ -135,18 +144,27 @@ from S3, a `bytea` column or a local disk is invisible to the client.
 
 ## Where does auth come from?
 
-Keycloak, via a **server-side Authorization Code flow in a BFF that sets httpOnly
-cookies**. No OIDC library in the browser, no token in JavaScript. The full design is
-in [`target-architecture.md`](./target-architecture.md).
+Keycloak, via a **server-side Authorization Code flow that sets httpOnly cookies, running
+inside our own Node backend**. No OIDC library in the browser, no token in JavaScript, and
+no separate auth process. The full design is in
+[`target-architecture.md`](./target-architecture.md).
 
-An earlier revision of this document recommended Authorization Code + PKCE with
-`oidc-client-ts` in the SPA. That was superseded once `../yanshuf3` turned out to
-already run exactly this flow against the same Keycloak — see
-[`yanshuf3-conventions.md`](./yanshuf3-conventions.md). The BFF wins on three counts:
-it is proven in this environment with a client already provisioned, it keeps tokens out
-of browser memory, and it removes the need to thread an access token into
-`getBuffer`'s bare `fetch(url)` — a trap that would otherwise have broken uploaded
-sounds while leaving built-ins working.
+Two revisions got here. First, an earlier draft used Authorization Code + PKCE with
+`oidc-client-ts` in the SPA; that was superseded once both sibling projects turned out to
+run the server-side flow against this same Keycloak. The cookie approach wins on three
+counts: it is proven in this environment, it keeps tokens out of browser memory, and it
+removes the need to thread an access token into `getBuffer`'s bare `fetch(url)` — a trap
+that would otherwise have broken uploaded sounds while leaving built-ins working.
+
+Second, the flow was going to live in a separate sidecar process, mirroring both siblings.
+It now lives in the Soundboard backend instead. A sidecar earns its keep when several apps
+share one Keycloak client registration and one place that knows about the IdP; for a single
+small service it is an extra deployment unit, health check and network hop for nothing, and
+in an air-gapped environment every additional service is another thing to image, mirror and
+get firewall rules for. `openid-client` reduces the flow to three thin routes.
+
+The cost is one dependency a shared sidecar would have provided: Soundboard needs its own
+Keycloak client registration, with the `client_secret` in Vault.
 
 Worth stating why this is the easy call even though the project does not care much
 about auth: **not caring about auth is the strongest argument for delegating it.**
@@ -159,9 +177,9 @@ The rejected alternative was a local `app_users` table with bcrypt hashes and an
 `app_sessions` table. That plan is only worth revisiting if the Keycloak realm turns
 out to be unavailable to this app.
 
-**Auth being a low priority for this project is the argument for the BFF, not against
-it.** There is no login UI to build and no auth code to own: `AuthPage.tsx` gets
-deleted rather than rewritten, and because Keycloak fronts corporate SSO an existing
+**Auth being a low priority for this project is the argument for delegating to Keycloak, not
+against it.** There is no login UI to build and almost no auth code to own: `AuthPage.tsx`
+gets deleted rather than rewritten, and because Keycloak fronts corporate SSO an existing
 session round-trips back without the user seeing a form.
 
 Two things Keycloak does **not** solve, and it is important not to assume otherwise:
@@ -286,7 +304,7 @@ easiest thing to get wrong in this migration.
    silently — the user signs in and gets a freshly seeded empty board.
 7. **Playback fetches audio with no auth header.** `getBuffer` in `App.tsx` calls bare
    `fetch(url)`. Under bearer-token auth, uploaded sounds would stop playing while
-   built-ins kept working. The cookie BFF makes this a non-issue, which is part of why
+   built-ins kept working. The httpOnly cookie makes this a non-issue, which is part of why
    it was chosen — but do not reintroduce a bearer-only audio route.
 8. **A presigned URL would break the audio cache.** `App.tsx` keys its decoded
    `AudioBuffer` cache on the URL string. Presigned URLs rotate, so the cache would
@@ -315,9 +333,16 @@ back when the plan was local passwords. With Keycloak they are irrelevant — ex
     the mirror. yanshuf3 solves this with a `stripLockIntegrity` step run before
     `npm ci`, plus a `checkNexusPackages` script that reports every missing package at
     once. Reuse both rather than rediscovering the problem.
-15. **Secrets belong in the vault service, not `.env`.** The environment already runs
-    one, with a Redis mirror so vault being down does not take the app down. Env vars
-    are for non-secret wiring only.
+15. **Secrets belong in Vault, not `.env`.** Read them directly over the KV v2 API from an
+    in-process TypeScript module — hana2trino's `secrets.ts` is the model, and it replaced
+    yanshuf3's Python vault microservice. Env vars are for non-secret wiring only, plus
+    `VAULT_TOKEN`, which is the one credential that cannot itself come from Vault.
+16. **Do not read Vault per request.** hana2trino's module reads the store on every call,
+    which buys rotation without a restart but costs a round trip per database call — its
+    own docstring says so. Memoise the derived clients and give the secret read a TTL.
+17. **One connection pool, not one per call.** hana2trino's `pg.ts` constructs two new
+    `pg.Pool` objects every time it is called and closes neither, which exhausts
+    connections under load.
 
 ## Recommended plan
 
@@ -344,19 +369,22 @@ Phase 1 has consolidated the data layer. Update every path pattern in the steeri
 instruction files, and in `scripts/sync-agent-docs.mjs`, in the same commit.
 
 **Phase 2 — stand up the new backend.**
-New migration set with no `auth.` or `storage.` references, the Node API, the S3
-client, and Keycloak token validation. Import the Phase 0 data, mapping users
-through the `app_users` mirror. Test against the real closed-environment
-PostgreSQL, S3 and Keycloak, not local substitutes — versions, path-style quirks,
-privilege levels and realm configuration are what will bite.
+New migration set with no `auth.` or `storage.` references, the Node API, the secrets
+module, the S3 client, the OIDC routes and per-request token verification. Build
+`IS_BLACK_ENV` mock mode first so the whole thing is developable with no Keycloak and no
+Vault reachable. Import the Phase 0 data, mapping users through the `app_users` mirror.
+Then test against the real closed-environment PostgreSQL, S3, Vault and Keycloak, not local
+substitutes — versions, path-style quirks, privilege levels and realm configuration are
+what will bite.
 
 **Phase 3 — flip the seam.**
 Reimplement `src/lib/api.ts` over `fetch('/api/...')` with
 `credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with a
-`GET /api/me` call plus a redirect-to-BFF `login()`, **delete** `AuthPage.tsx`, then
-remove `@supabase/supabase-js`, the `supabase` CLI dev dependency and the
-`VITE_SUPABASE_*` vars. The two data hooks should barely change if Phase 1 was done
-properly, and no OIDC client library gets added.
+`GET /api/me` call plus a `login()` that navigates to `/auth/login`, **delete**
+`AuthPage.tsx`, then remove `@supabase/supabase-js`, the `supabase` CLI dev dependency and
+the `VITE_SUPABASE_*` vars. The two data hooks should barely change if Phase 1 was done
+properly, and no OIDC client library is added to the frontend — `openid-client` lives on
+the backend only.
 
 **Phase 4 — harden for the closed environment.**
 Vendor the ffmpeg core, set COOP/COEP on the API's HTML response, rename the
@@ -369,9 +397,9 @@ path for uploads, and schedule the S3 reconciliation job. See the
 
 Answered by the environment, so no longer open: something other than PostgreSQL can run
 (so the Node API is viable), object storage exists (so `bytea` is the fallback rather
-than the plan), an identity provider exists (so no local passwords), a vault service
-exists (so no secrets in `.env`), and the npm mirror is Nexus (so `npm ci` works with
-`stripLockIntegrity`).
+than the plan), an identity provider exists (so no local passwords), HashiCorp Vault exists
+and can be read directly (so no secrets in `.env` and no vault microservice), and the npm
+mirror is Nexus (so `npm ci` works with `stripLockIntegrity`).
 
 Still open, and each one can change the design:
 

@@ -29,11 +29,11 @@ Fields of `user` actually consumed:
 `signUp` returns no session. Password rule is a client-side `minLength={6}`.
 No magic link, OAuth, or password reset exists.
 
-**All five calls are replaced by Keycloak via a cookie BFF**, not by hand-written
-equivalents and not by a browser OIDC library. There is no signup, login, logout or
-password endpoint to build: `useAuth` reads `GET /api/me` and its `login()` is a
-full-page redirect to the BFF, so **`AuthPage.tsx` is deleted rather than rewritten** —
-SSO means there is no form to show. The one thing the replacement must do that Supabase
+**All five calls are replaced by Keycloak**, not by hand-written equivalents and not by a
+browser OIDC library. There is no signup or password endpoint to build; `/auth/login`,
+`/auth/callback` and `/auth/logout` live in our own backend. `useAuth` reads
+`GET /api/me` and its `login()` is a full-page navigation to `/auth/login`, so
+**`AuthPage.tsx` is deleted rather than rewritten** — SSO means there is no form to show. The one thing the replacement must do that Supabase
 did implicitly is map the Keycloak `upn` claim onto the existing Supabase user id; see
 [`target-architecture.md`](./target-architecture.md).
 
@@ -113,8 +113,9 @@ primary keys** — notably none on `user_sounds.user_id`.
 - `vite.config.ts` has nothing Supabase-specific, but does set COOP/COEP for
   ffmpeg.wasm and excludes `@ffmpeg/*` from `optimizeDeps`.
 - Dependencies to drop at the end: `@supabase/supabase-js`, and the `supabase` CLI dev
-  dependency. **Nothing is added on the web side** — the cookie BFF means no OIDC client
-  library. The API side gains `pg`, `@aws-sdk/client-s3`, `zod` and an HTTP framework,
+  dependency. **Nothing is added on the web side** — the cookie session means no OIDC
+  client library in the browser. The backend gains `pg`, `@aws-sdk/client-s3`, `jose`,
+  `openid-client`, `zod` and an HTTP framework,
   which is the argument for the workspace split in
   [`target-architecture.md`](./target-architecture.md): server dependencies must not
   leak into the browser bundle.

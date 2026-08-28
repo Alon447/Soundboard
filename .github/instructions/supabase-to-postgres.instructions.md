@@ -1,6 +1,6 @@
 ---
 applyTo: "src/lib/**,supabase/**,src/components/AuthPage.tsx,backend/**,frontend/src/lib/**,packages/shared/**,db/**"
-description: "Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3, Keycloak and a vault service in a closed environment."
+description: "Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3, Keycloak and HashiCorp Vault in a closed environment."
 ---
 
 # Portability-critical layer
@@ -10,9 +10,12 @@ closed environment, which provides **PostgreSQL, S3-compatible object storage an
 Keycloak**, no Supabase, and no outbound internet — plus a Node API to tie them
 together.
 
-Design: `docs/target-architecture.md`. **Reference implementation:
-`docs/yanshuf3-conventions.md`** — `../yanshuf3` already runs on this stack, so copy its
-conventions rather than inventing new ones. Analysis and rejected options:
+Design: `docs/target-architecture.md`. **Reference implementations:
+`docs/house-conventions.md`** — `../yanshuf3` and `../yanshuf3-Hana2Trino` already run on
+this stack, so copy their conventions rather than inventing new ones. **Soundboard adds
+exactly one process**: Vault is read directly over KV v2 and the Keycloak code flow runs in
+our own backend — no auth sidecar, no vault microservice, no Python.
+Analysis and rejected options:
 `docs/backend-portability.md`. Call-site checklist:
 `docs/supabase-surface-inventory.md`. Target schema, API contract and migration
 runbook: `.kiro/skills/supabase-to-postgres/references/` (mirrored under
@@ -75,10 +78,11 @@ PostgreSQL" is no.
 `AudioBuffer`s keyed by that URL string.
 
 - A bearer-protected audio endpoint breaks **uploaded** sounds while built-ins keep
-  working, because built-ins are static files. This is one of the three reasons auth is
-  a **cookie BFF** rather than SPA-side PKCE — cookies are sent automatically, so
-  `credentials: 'same-origin'` authenticates the audio route with no change to the
-  playback path. Do not add a bearer-only audio route later.
+  working, because built-ins are static files. This is one of the three reasons the session
+  is an **httpOnly cookie** set by a server-side code flow rather than SPA-side PKCE with a
+  bearer token — cookies are sent automatically, so `credentials: 'same-origin'`
+  authenticates the audio route with no change to the playback path. Do not add a
+  bearer-only audio route later.
 - A presigned URL rotates per request, so the buffer cache would never hit. Key the
   cache on the sound id if presigning is ever adopted.
 
@@ -107,12 +111,14 @@ No big-bang cutover.
 3. **Restructure** to `frontend/` + `backend/` + `packages/shared` (matching yanshuf3),
    own commit, updating every path pattern in `.kiro/steering/`,
    `.github/instructions/` and `scripts/sync-agent-docs.mjs`.
-4. **Backend**: migrations with no `auth.`/`storage.` references, the Node API, the S3
-   client, the vault client, session validation. Build `IS_BLACK_ENV` mock mode first so
-   this is developable offline. Test against the real PostgreSQL, S3 and Keycloak.
+4. **Backend**: migrations with no `auth.`/`storage.` references, the Node API, the secrets
+   module, the S3 client, the OIDC routes and per-request verification. Build
+   `IS_BLACK_ENV` mock mode first so this is developable with neither Keycloak nor Vault
+   reachable. Test against the real PostgreSQL, S3, Vault and Keycloak.
 5. **Flip**: `src/lib/api.ts` over `fetch` with `credentials: 'same-origin'`, `useAuth`
-   onto `GET /api/me` plus a redirect-to-BFF `login()`, **delete** `AuthPage.tsx`,
-   remove `@supabase/supabase-js`. Add no OIDC client library.
+   onto `GET /api/me` plus a `login()` that navigates to `/auth/login`, **delete**
+   `AuthPage.tsx`, remove `@supabase/supabase-js`. No OIDC library in the frontend —
+   `openid-client` is backend-only.
 6. **Harden**: see `airgap-readiness.instructions.md`.
 
 ## Ask, don't assume

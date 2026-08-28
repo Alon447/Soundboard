@@ -24,11 +24,16 @@ architecture doc sends the next reader down a path that no longer exists.
 
 ## Active constraint: migrating off Supabase to a closed environment
 
-The target environment has **PostgreSQL, S3-compatible object storage, Keycloak and a
-vault service**, no Supabase, and no outbound internet. This is a live requirement.
+The target environment has **PostgreSQL, S3-compatible object storage, Keycloak and
+HashiCorp Vault**, no Supabase, and no outbound internet. This is a live requirement.
 
-**`../yanshuf3` already runs on that stack** — same Keycloak, same S3. Its conventions
-are prior art; read `docs/yanshuf3-conventions.md` before designing anything backend.
+**Two sibling projects already run on that stack** — `../yanshuf3` and
+`../yanshuf3-Hana2Trino`. Their conventions are prior art; read
+`docs/house-conventions.md` before designing anything backend.
+
+Soundboard adds **exactly one process**. Vault is read directly over its KV v2 API and the
+Keycloak code flow runs in our own backend — no auth sidecar, no vault microservice, no
+Python, unlike the siblings.
 
 - **Never persist an absolute URL to a media file in the database.**
   `shared_sounds.file_url` holding a Supabase signed URL is the single biggest reason
@@ -36,7 +41,8 @@ are prior art; read `docs/yanshuf3-conventions.md` before designing anything bac
 - **Do not treat RLS as the only authorization.** The client sends `user_id` in
   inserts and deletes with no user filter. Only `auth.uid()` policies make that safe,
   and they will not exist. A valid token proves identity, not permission.
-- **Secrets come from the vault service, not `.env`.**
+- **Secrets come from Vault, read directly over KV v2, not from `.env`.** Memoise the
+  derived clients; do not hit Vault per request.
 - **Do not add new Supabase-specific dependencies** (Storage, realtime, edge
   functions, `auth.*` schema references) without flagging the portability cost.
 - **Do not add anything that needs the public internet at runtime or build time.**
@@ -45,7 +51,7 @@ are prior art; read `docs/yanshuf3-conventions.md` before designing anything bac
 
 - `docs/architecture.md` — how the app works today
 - `docs/target-architecture.md` — the decided target: Node API, S3, Keycloak BFF, layout
-- `docs/yanshuf3-conventions.md` — the sibling project to copy from, and what not to copy
+- `docs/house-conventions.md` — the two sibling projects to copy from, and what not to copy
 - `docs/backend-portability.md` — why Supabase does not port; rejected options
 - `docs/supabase-surface-inventory.md` — every Supabase call site, as a checklist
 - Skills: `supabase-to-postgres`, `airgap-readiness`, `docs-sync`

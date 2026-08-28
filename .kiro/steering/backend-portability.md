@@ -1,20 +1,23 @@
 ---
 inclusion: fileMatch
-fileMatchPattern: ["src/lib/**", "supabase/**", "src/components/AuthPage.tsx", "backend/**", "frontend/src/lib/**", "packages/shared/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/yanshuf3-conventions.md"]
+fileMatchPattern: ["src/lib/**", "supabase/**", "src/components/AuthPage.tsx", "backend/**", "frontend/src/lib/**", "packages/shared/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/house-conventions.md"]
 ---
 
 # You are editing the portability-critical layer
 
 This app is migrating off Supabase into a closed environment that provides
-**PostgreSQL, S3-compatible object storage, Keycloak and a vault service**, with no
+**PostgreSQL, S3-compatible object storage, Keycloak and HashiCorp Vault**, with no
 outbound internet. Every file matching this pattern is part of what has to change.
 
-`../yanshuf3` already runs on that stack. Copy its conventions rather than inventing
-new ones — a second app in the same environment doing auth and storage differently is
-a tax on whoever operates both.
+`../yanshuf3` and `../yanshuf3-Hana2Trino` already run on that stack. Copy their
+conventions rather than inventing new ones — a third app in the same environment doing
+auth and storage differently is a tax on whoever operates all three.
+
+**Soundboard adds exactly one process.** Vault is read directly over KV v2 and the Keycloak
+code flow runs in our own backend: no auth sidecar, no vault microservice, no Python.
 
 Design: #[[file:docs/target-architecture.md]]
-Reference implementation: #[[file:docs/yanshuf3-conventions.md]]
+Reference implementations: #[[file:docs/house-conventions.md]]
 Analysis and rejected options: #[[file:docs/backend-portability.md]]
 
 ## Rules for changes here
@@ -41,9 +44,12 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    this wrong orphans every existing board — and fails silently, because the user just
    sees a freshly seeded empty board.
 
-4a. **Secrets come from the vault service**, not `.env`: `getSecret('s3')`,
-   `getSecret('db/postgres/<env>')`, `getSecret('idp/keycloack/soundboard')`. Env vars
-   are non-secret wiring only, Zod-validated at boot with no fallback values.
+4a. **Secrets come from Vault, read directly over KV v2**, not `.env`: `getSecret('s3')`,
+   `getSecret('db/postgres/<env>')`, `getSecret('idp/keycloak/soundboard')`. Port
+   hana2trino's `backend/src/utils/secrets.ts`. Env vars carry non-secret wiring plus
+   `VAULT_TOKEN`, Zod-validated at boot with no fallback values. **Memoise the derived
+   clients** — one `pg.Pool`, one `S3Client` — rather than reading Vault per request the
+   way hana2trino does, and never build a new pool per call the way its `pg.ts` does.
 
 5. **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject`
    first, then the rows in one transaction, so a failure leaves a harmless orphaned
@@ -70,9 +76,10 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
 `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers, and caches decoded
 `AudioBuffer`s keyed by that URL string. Two consequences:
 
-- A bearer-protected audio endpoint breaks uploaded sounds while built-ins keep
-  working. This is why auth is a **cookie BFF** and not SPA-side PKCE — cookies are
-  sent automatically. Do not add a bearer-only audio route.
+- A bearer-protected audio endpoint breaks uploaded sounds while built-ins keep working.
+  This is why the session is an **httpOnly cookie** set by a server-side code flow, not
+  SPA-side PKCE with a bearer token — cookies are sent automatically. Do not add a
+  bearer-only audio route.
 - A presigned URL rotates per request, so the cache would never hit. Key the cache on
   the sound id if presigning is ever adopted.
 

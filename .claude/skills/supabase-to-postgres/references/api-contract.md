@@ -4,30 +4,40 @@ The HTTP surface that replaces GoTrue + PostgREST + Storage. Sized to exactly wh
 the app uses today (see `docs/supabase-surface-inventory.md`) plus the gaps worth
 closing.
 
-Serve the built frontend from the same process, so everything is same-origin. That
-removes CORS, satisfies `Cross-Origin-Embedder-Policy: require-corp` for audio, and
-lets a session cookie be `SameSite=Lax` if you go the BFF route.
+Serve the built frontend from the same origin, so there is no CORS,
+`Cross-Origin-Embedder-Policy: require-corp` is satisfied for audio, and the session cookie
+can be `SameSite=Lax`.
 
-Stack: Fastify + `pg` + `@aws-sdk/client-s3` + `jose`. One process.
+Stack: Express or Fastify + `pg` + `@aws-sdk/client-s3` + `jose` + `openid-client`. **One
+process** — it serves `/api/*`, owns `/auth/*`, and reads Vault directly.
 
 ## Auth model
 
-Keycloak owns authentication, via a **cookie BFF**. There are **no** signup, login,
-logout or password endpoints in this API — that is the whole point of using Keycloak,
-and `../yanshuf3` already runs exactly this flow against the same realm.
+Keycloak owns authentication. There are **no signup, password or password-reset endpoints**
+— that is the point of using Keycloak — but unlike both sibling projects, **this API owns
+the OIDC flow itself**. No sidecar process.
 
-The BFF (`/auth/oidc/login-redirect`, `/auth/oidc/callback`,
-`/auth/oidc/validate-session`) completes a server-side Authorization Code flow as a
-confidential client and sets `id_token` and `access_token` as **httpOnly cookies** on
-the app's own origin. The SPA never sees a token, and the frontend's only auth action
-is a full-page navigation to `login-redirect` with the return URL in `state`.
+### Auth routes
 
-Per request, this API then either:
+| Method | Path | Role |
+| --- | --- | --- |
+| GET | `/auth/login?state=<return url>` | build the authorize URL, 302 to Keycloak |
+| GET | `/auth/callback?code=&state=` | exchange the code, set the cookie, 302 back to `state` |
+| POST | `/auth/logout` | clear the cookie, then RP-initiated logout at Keycloak |
 
-- **delegates** to the BFF, posting the two cookies to `validate-session` and getting
-  claims back — what yanshuf3's Node backend does, and the least code if `auth-service`
-  is shared infrastructure; or
-- **verifies in-process** with `jose`, if Soundboard runs its own:
+Use `openid-client`: it handles discovery, the authorize URL, PKCE and the code exchange
+including ID token validation. Soundboard is a **confidential client** — the exchange is
+server-side, authenticated with a `client_secret` read from Vault at
+`idp/keycloak/soundboard`.
+
+The session cookie is `HttpOnly; Secure; SameSite=Lax; Path=/`. The SPA never sees a token;
+its only auth action is a full-page navigation to `/auth/login` with the return URL in
+`state`. Validate `state` on the way back — it is both the return URL and the CSRF
+protection, so reject anything that is not a same-origin path.
+
+### Per-request verification
+
+Verify the cookie **in-process on every request** with `jose`:
 
 ```ts
 const jwks = createRemoteJWKSet(new URL(`${OIDC_ISSUER_URL}/protocol/openid-connect/certs`));
@@ -38,8 +48,14 @@ const { payload } = await jwtVerify(token, jwks, {
 });
 ```
 
-Ask which before building. Either way, resolve the local user and attach it to the
-request:
+JWKS is fetched lazily and cached, so this costs microseconds per request. **Both siblings
+skip real verification and both are wrong to.** hana2trino calls
+`jsonwebtoken.decode()`, which validates no signature and never compares `exp` to the
+clock, and reads its sidecar's `ok` field without testing it; its per-request middleware
+skips validation entirely, so a revoked session keeps working until the cookie expires.
+yanshuf3 omits audience validation and passes no clock tolerance.
+
+Then resolve the local user and attach it to the request:
 
 1. `select * from app_users where upn = $1`
 2. else `select * from app_users where email = $1`, and `update … set upn = $2`
@@ -70,10 +86,16 @@ Do not introduce a bearer-only route for audio later; it reopens this.
 
 ### Mock mode
 
-Copy yanshuf3's `IS_BLACK_ENV` switch: with it set, no IdP is contacted, the callback is
-reached with a mock code, and validation synthesizes claims from env vars while the
-cookie path still runs. It is how the auth stack gets developed outside the closed
-network.
+Copy the `IS_BLACK_ENV` switch: with it set, no IdP is contacted, the callback is reached
+with a mock code, and validation synthesizes claims from env vars while the cookie path
+still runs. It is how the auth stack gets developed outside the closed network, where there
+is no Keycloak to reach.
+
+hana2trino's Node implementation is the one to copy — `z.string().default("false")
+.transform(v => v.toLowerCase() === "true")` plus an `isBlackEnv()` helper — but **only for
+identity, storage and secrets, never privileges**. Theirs also returns `IT: true`, making a
+mistyped env var an admin bypass. Ownership checks must run identically in both modes, or
+they are untested exactly where development happens.
 
 ## Endpoints
 
@@ -86,10 +108,11 @@ network.
 Called once on load to resolve the local user and warm the mirror row. The client maps
 this onto the existing `useAuth` context shape, so `App.tsx` needs no changes.
 
-A 401 means "no valid session" and the client responds by navigating to
-`/auth/oidc/login-redirect`. Distinguish it from 502, which means the BFF or Keycloak is
-unreachable — yanshuf3 maps `ECONNREFUSED` to `badGateway` specifically so the frontend
-shows a retry instead of bouncing into a redirect loop. Copy that.
+A 401 means "no valid session" and the client responds by navigating to `/auth/login`.
+Distinguish it from 502, which means Keycloak or Vault is unreachable — yanshuf3 maps
+`ECONNREFUSED` to `badGateway` specifically so the frontend shows a retry instead of
+bouncing into a redirect loop, and hana2trino's `App.tsx` additionally guards against
+redirecting when already on the login path. Copy both.
 
 ### Board
 
@@ -217,8 +240,8 @@ S3 error text — it exposes schema, constraint names, bucket names and endpoint
 known failures to codes and log the original server-side. Follow yanshuf3's convention
 of an error factory plus `next(err)` rather than `res.status(500)` inline.
 
-401 makes the client navigate to the BFF's `login-redirect`. 502 means the BFF or
-Keycloak is down — show a retry, do not redirect.
+401 makes the client navigate to `/auth/login`. 502 means Keycloak or Vault is down — show
+a retry, do not redirect, or you get a loop.
 
 ## Type changes
 
@@ -242,9 +265,13 @@ id, which keeps the storage layer private.
   `Cross-Origin-Embedder-Policy: require-corp` on the HTML response, or ffmpeg.wasm's
   multi-threaded core fails. `vite.config.ts` only covers dev and preview, and
   yanshuf3's nginx does not set them because nothing there needs isolation.
-- **Secrets come from the vault service, not `.env`** — `getSecret('s3')`,
-  `getSecret('db/postgres/<env>')`, `getSecret('idp/keycloack/soundboard')`. Env vars
-  are for non-secret wiring only.
+- **Secrets come from Vault, read directly over KV v2, not from `.env`** —
+  `getSecret('s3')`, `getSecret('db/postgres/<env>')`,
+  `getSecret('idp/keycloak/soundboard')`. Port hana2trino's
+  `backend/src/utils/secrets.ts`. Env vars carry non-secret wiring plus `VAULT_TOKEN`,
+  which is the one credential that cannot come from Vault.
+- **Memoise the derived clients** — one `pg.Pool`, one `S3Client`. Give the secret read a
+  TTL rather than hitting Vault per request the way hana2trino does.
 - Use a `pg.Pool`, not a connection per request. yanshuf3 splits read and write pools
   from one vault secret and probes both with `SELECT 1` at startup; copy the probe and
   the graceful `pool.end()` on SIGTERM.

@@ -10,8 +10,8 @@ is being migrated to a closed-environment stack.
 Deeper context, read these before proposing backend changes:
 
 - `docs/architecture.md` — how the app works today
-- `docs/target-architecture.md` — the decided target: Node API, S3, Keycloak BFF, layout
-- `docs/yanshuf3-conventions.md` — the sibling project already on this stack: what to
+- `docs/target-architecture.md` — the decided target: one Node backend, S3, Keycloak, Vault
+- `docs/house-conventions.md` — the two sibling projects already on this stack: what to
   copy and what not to
 - `docs/backend-portability.md` — why Supabase does not port; rejected options
 - `docs/supabase-surface-inventory.md` — every Supabase call site as a checklist
@@ -34,9 +34,10 @@ contradiction next to it.
 
 - The board lives in Supabase (`user_sounds`, `shared_sounds`) and requires sign-in.
   There is no guest/local fallback.
-- Auth today is Supabase email + password. The target is Keycloak SSO via a cookie BFF,
-  with **no OIDC library in the browser** and no login UI — `AuthPage.tsx` gets deleted,
-  not rewritten. Do not add any other auth flow, and do not add an OIDC client package.
+- Auth today is Supabase email + password. The target is Keycloak SSO via a server-side
+  code flow **in our own backend**, setting an httpOnly cookie. No OIDC library in the
+  browser, no login UI — `AuthPage.tsx` gets deleted, not rewritten. `openid-client` goes on
+  the backend only. Do not add any other auth flow.
 - `.env` must hold `VITE_SUPABASE_URL` and the anon key of the *same* project ref;
   restart the dev server after changing it.
 - Schema changes go in `supabase/migrations` while still on Supabase, applied with
@@ -62,11 +63,17 @@ contradiction next to it.
 ## Active constraint: migrating off Supabase
 
 The target environment provides **PostgreSQL, S3-compatible object storage, Keycloak and
-a vault service**, no Supabase, and no outbound internet, plus a Node API to tie them
+HashiCorp Vault**, no Supabase, and no outbound internet, plus one Node process tying them
 together. This is a live requirement, not a hypothetical.
 
-**`../yanshuf3` already runs on that stack** — same Keycloak, same S3, same vault. Read
-`docs/yanshuf3-conventions.md` before designing anything backend.
+**Two sibling projects already run on that stack** — `../yanshuf3` and
+`../yanshuf3-Hana2Trino`, same Keycloak, same S3, same Vault. Read
+`docs/house-conventions.md` before designing anything backend.
+
+**Soundboard adds exactly one process.** Vault is read directly over its KV v2 API (port
+hana2trino's `backend/src/utils/secrets.ts`) and the Keycloak code flow runs in our own
+backend. No auth sidecar, no vault microservice, no Python — both siblings split those out
+and we deliberately do not.
 
 Supabase Storage is not a Postgres feature, and browsers cannot speak the PostgreSQL
 wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
@@ -84,7 +91,8 @@ wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
   does not relax this.
 - **Write S3 before PostgreSQL.** They cannot share a transaction, so order the
   writes to fail into a harmless orphaned object.
-- **Secrets come from the vault service**, not `.env`.
+- **Secrets come from Vault, read directly over KV v2**, not `.env`. Memoise the derived
+  clients (one `pg.Pool`, one `S3Client`) rather than hitting Vault per request.
 - **Do not add anything requiring the public internet**, at runtime or build time.
 - **Do not add new Supabase-only dependencies** (Storage, realtime, edge functions,
   `auth.*` schema references) without flagging the portability cost.
@@ -97,7 +105,7 @@ wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
   must send them or `SharedArrayBuffer` is undefined and ffmpeg-mt fails.
 - `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers and caches decoded
   buffers keyed by that URL. A bearer-protected audio endpoint would break uploaded
-  sounds only — which is why auth is a cookie BFF. A presigned URL would break the
+  sounds only — which is why the session is a cookie. A presigned URL would break the
   cache entirely.
 - `npm ci` against the Nexus mirror fails on lockfile integrity hashes unless
   `stripLockIntegrity` runs first. yanshuf3 has the script.

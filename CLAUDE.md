@@ -57,10 +57,10 @@ next to it.
 - Built-in pads are declared in `src/lib/sounds.ts`; bundled audio lives in
   `public/sounds/`, pad images in `public/images/`.
 - Keep mp3 and mp4 support working when touching playback.
-- Auth today is Supabase email + password. The target is Keycloak SSO via a cookie
-  BFF, with **no OIDC library in the browser** and no login UI at all — `AuthPage.tsx`
-  gets deleted, not rewritten. Do not add any other auth flow, and do not add an OIDC
-  client package.
+- Auth today is Supabase email + password. The target is Keycloak SSO via a server-side
+  code flow **in our own backend**, setting an httpOnly cookie. No OIDC library in the
+  browser, no login UI at all — `AuthPage.tsx` gets deleted, not rewritten. `openid-client`
+  goes on the backend only. Do not add any other auth flow.
 - Schema changes go in `supabase/migrations/` while still on Supabase, applied with
   `npx supabase db push`. New schema for the target stack goes in `db/migrations/`.
 - Keep changes minimal and scoped to what was asked.
@@ -68,12 +68,18 @@ next to it.
 ## The migration that shapes all backend work
 
 The target is a closed environment providing **PostgreSQL, S3-compatible object
-storage, Keycloak and a vault service**, with no outbound internet, plus a Node API to
-tie them together. This is a live requirement.
+storage, Keycloak and HashiCorp Vault**, with no outbound internet, plus one Node process
+tying them together. This is a live requirement.
 
-**`../yanshuf3` already runs on that stack** — same Keycloak, same S3, same vault. Read
-`docs/yanshuf3-conventions.md` before designing anything backend. Most decisions are
-already made there, and it also documents which of its patterns are warts to avoid.
+**Two sibling projects already run on that stack** — `../yanshuf3` and
+`../yanshuf3-Hana2Trino`, same Keycloak, same S3, same Vault. Read
+`docs/house-conventions.md` before designing anything backend. Most decisions are already
+made there, and it also documents which of their patterns are warts to avoid.
+
+**Soundboard adds exactly one process.** Vault is read directly over its KV v2 API (port
+hana2trino's `backend/src/utils/secrets.ts`) and the Keycloak code flow runs in our own
+backend. No auth sidecar, no vault microservice, no Python — both siblings split those out
+and we deliberately do not.
 
 Supabase Storage is not a Postgres feature, and browsers cannot speak the PostgreSQL
 wire protocol. Porting means rebuilding the HTTP layer Supabase provided, not
@@ -97,7 +103,8 @@ Six rules, in rough order of how expensive they are to get wrong:
    board.
 4. **Write S3 before PostgreSQL.** No shared transaction, so order the writes to fail
    into a harmless orphaned object rather than a row pointing at nothing.
-5. **Secrets come from the vault service**, not `.env`.
+5. **Secrets come from Vault, read directly over KV v2**, not `.env`. Memoise the derived
+   clients rather than hitting Vault per request.
 6. **Nothing may require the public internet**, at runtime or build time.
 
 ## Where the detail lives
@@ -108,7 +115,7 @@ Read these before proposing backend changes rather than reasoning from scratch:
 | --- | --- |
 | `docs/architecture.md` | how the app works today: sound sources, playback, upload flow, known rough edges |
 | `docs/target-architecture.md` | the decided target: Node API, S3 design, Keycloak BFF, identity mapping, workspace layout |
-| `docs/yanshuf3-conventions.md` | the sibling project on the same stack: copy list, do-not-copy list, gaps |
+| `docs/house-conventions.md` | the two sibling projects on the same stack: copy list, do-not-copy list, gaps |
 | `docs/backend-portability.md` | why Supabase does not port, options rejected, phased plan, open questions |
 | `docs/supabase-surface-inventory.md` | every Supabase call site, table, column and policy as a port checklist |
 
@@ -129,7 +136,7 @@ Skills in `.claude/skills/`:
   needs them or `SharedArrayBuffer` is undefined and ffmpeg-mt fails to load.
 - `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers and caches decoded
   buffers keyed by that URL. A bearer-protected audio endpoint would break uploaded
-  sounds only — which is why auth is a cookie BFF. A presigned URL would break the
+  sounds only — which is why the session is a cookie. A presigned URL would break the
   cache entirely.
 - `npm ci` against the Nexus mirror fails on lockfile integrity hashes unless
   `stripLockIntegrity` runs first. yanshuf3 has the script.

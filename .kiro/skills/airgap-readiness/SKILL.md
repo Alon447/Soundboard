@@ -1,6 +1,6 @@
 ---
 name: airgap-readiness
-description: Make the Soundboard app run in a closed, air-gapped, or on-prem environment with no outbound internet. Use when working on ffmpeg.wasm loading, COOP/COEP cross-origin isolation headers, external CDN dependencies, static asset paths and filenames, production deployment or hosting config, upload size limits, the S3 client configuration, Keycloak connectivity, secrets and the vault service, offline npm installs against the Nexus mirror, or TLS with an internal CA. Also use when the user mentions offline, air-gapped, closed network, on-prem, or intranet deployment.
+description: Make the Soundboard app run in a closed, air-gapped, or on-prem environment with no outbound internet. Use when working on ffmpeg.wasm loading, COOP/COEP cross-origin isolation headers, external CDN dependencies, static asset paths and filenames, production deployment or hosting config, upload size limits, the S3 client configuration, Keycloak connectivity, secrets and HashiCorp Vault access, the IS_BLACK_ENV development switch, offline npm installs against the Nexus mirror, or TLS with an internal CA. Also use when the user mentions offline, air-gapped, closed network, on-prem, or intranet deployment.
 ---
 
 # Air-gap readiness
@@ -9,10 +9,10 @@ Closed-environment failure modes that are **not** about porting off Supabase. Mo
 them look like unrelated bugs, and several fail in ways that pass a casual smoke
 test. Treat this as its own phase of work.
 
-Sections 1 to 5 apply to the app as it stands today. Sections 6 to 11 apply once the
-Node API, S3, Keycloak and the vault service are in play — see
-`docs/target-architecture.md` for the design and `docs/yanshuf3-conventions.md` for the
-sibling project that has already solved most of them.
+Sections 1 to 5 apply to the app as it stands today. Sections 6 to 12 apply once the
+Node backend, S3, Keycloak and Vault are in play — see
+`docs/target-architecture.md` for the design and `docs/house-conventions.md` for the
+sibling projects that have already solved most of them.
 
 ## 1. ffmpeg.wasm loads its core from unpkg.com — hard failure
 
@@ -151,8 +151,9 @@ presigned URLs, bucket CORS becomes a hard prerequisite.
 
 Two independent network paths have to work, and they are often *not* the same route:
 
-- **browser → Keycloak**, for the login redirect and token exchange
-- **auth BFF / API → Keycloak**, for the JWKS document used to verify signatures
+- **browser → Keycloak**, for the login redirect
+- **backend → Keycloak**, for discovery, the code exchange, and the JWKS document used to
+  verify signatures on every request
 
 The trap: if the browser reaches Keycloak at one hostname and the API configures a
 different one, `iss` validation fails on every request even though both hosts are
@@ -207,9 +208,9 @@ Closed environments usually run an internal CA, and there are now four TLS hops.
   confusing failure because the app never gets to run.
 - **API → PostgreSQL.** `pg` may need `ssl: { ca: readFileSync('/path/ca.crt') }`, or
   `sslmode=verify-full` with `PGSSLROOTCERT`.
-- **API → S3 and API → Keycloak.** Both go through Node's HTTPS stack, which does
+- **API → S3, Keycloak and Vault.** All three go through Node's HTTPS stack, which does
   **not** read the OS trust store on Linux. Set `NODE_EXTRA_CA_CERTS=/path/ca.crt`
-  for the API process — one variable covers both.
+  for the backend process — one variable covers all three.
 
 Never reach for `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0`. In
 a closed network the CA is available; using it is a configuration task, not a
@@ -244,21 +245,77 @@ Also:
 - The house rule for WASM and other fetched artefacts is **vendor them into the image**,
   never fetch at runtime. That is the same conclusion as section 1's ffmpeg core.
 
-## 11. Secrets come from the vault service
+## 11. Secrets come from Vault, read directly
 
-The closed environment runs a vault service with a Redis mirror, and yanshuf3 sources
-every credential from it: `getSecret('s3')`, `getSecret('db/postgres/<env>')`,
-`getSecret('idp/keycloack/<app>')`. Soundboard should do the same.
+The closed environment runs HashiCorp Vault. Read it **straight from the Node process over
+the KV v2 HTTP API** — no intermediary service. hana2trino's
+`backend/src/utils/secrets.ts` is the model:
 
-Why this matters for air-gap readiness specifically: there is no `.env` file to
-distribute to the closed environment, and no secret material in the repository or the
-image. In development the same paths resolve to JSON files under `local_secrets/`, which
-is gitignored and handed over out of band.
+```ts
+const res = await axios.get(`${config.VAULT_PATH.replace(/\/+$/, "")}/data/${name}`, {
+  headers: { "X-Vault-Token": config.VAULT_TOKEN, Accept: "application/json" },
+  timeout: 5_000,
+});
+const data = (res.data as { data?: { data?: unknown } })?.data?.data;  // KV v2 double nesting
+```
 
-Environment variables stay, but only for non-secret wiring — `VAULT_SERVICE`,
-`IS_BLACK_ENV`, `PG_ENV`, `NODE_EXTRA_CA_CERTS`, `AWS_EC2_METADATA_DISABLED`. Validate
-them with Zod at boot and exit on failure. Do not add fallback values for things the
-architecture guarantees.
+with an `IS_BLACK_ENV` branch reading `local_secrets/<name>` as JSON. yanshuf3's older
+approach put a Python microservice in front of Vault; that is one more process to image,
+mirror and keep alive in a closed network, for no benefit.
+
+Why this matters for air-gap readiness specifically: there is **no `.env` file to distribute
+to the closed environment**, and no secret material in the repository or the image. In
+development the same paths resolve to gitignored JSON files handed over out of band.
+
+**`VAULT_TOKEN` is the bootstrap credential** — the one secret that cannot come from Vault.
+It must be injected by the platform, never committed, never logged. Find out its TTL and
+whether it needs renewing; a token that silently expires takes the app down at the next
+secret read.
+
+**Resolve at call time, never at import.** hana2trino is explicit about why: the process has
+to boot with the secret store unreachable. yanshuf3's Python service gets this wrong — it
+runs OIDC discovery at import, so Keycloak being down at boot stops the container starting.
+
+**But memoise the derived clients.** hana2trino reads Vault on *every* call, which buys
+rotation without a restart at the cost of a round trip per database call — its own docstring
+says so. One `pg.Pool` and one `S3Client`, built lazily and reused, with a TTL on the secret
+read, gets both properties. (hana2trino also builds two brand-new pools per call and closes
+neither, which exhausts connections under load.)
+
+The counter-example worth naming: hana2trino's own S3 client still **hardcodes** its access
+key, secret key, endpoint and bucket as string literals in `backend/src/utils/s3.ts` — it
+was not updated when `secrets.ts` landed. Those credentials are in that repo's git history
+and need rotating. Do not repeat it; build the S3 client from `getSecret('s3')`.
+
+Environment variables stay, but only for non-secret wiring plus the Vault coordinates —
+`VAULT_PATH`, `VAULT_TOKEN`, `IS_BLACK_ENV`, `PG_ENV`, `NODE_EXTRA_CA_CERTS`,
+`AWS_EC2_METADATA_DISABLED`. Validate them with Zod at boot and exit on failure. Do not add
+fallback values for things the architecture guarantees.
+
+Vault also needs the internal CA — see the TLS section. hana2trino uses
+`rejectUnauthorized: false` on its Vault agent; use `NODE_EXTRA_CA_CERTS` instead.
+
+## 12. `IS_BLACK_ENV` must not be a privilege switch
+
+One boolean meaning "am I outside the closed environment". Copy hana2trino's Node
+implementation from `backend/src/config/index.ts` and `backend/src/utils/envCheck.ts`:
+
+```ts
+IS_BLACK_ENV: z.string().default("false").transform((v) => v.toLowerCase() === "true"),
+export const isBlackEnv = () => config.IS_BLACK_ENV;
+```
+
+Read it through the helper, never `config.IS_BLACK_ENV` at call sites.
+
+What it should switch: identity (mock claims, Keycloak never contacted, cookie path still
+runs), storage (MinIO instead of the internal S3), and secrets (`local_secrets/` instead of
+Vault). What it must **never** switch: privileges. hana2trino's flag also returns
+`IT: true`, which makes one mistyped environment variable a complete auth bypass with admin
+rights.
+
+Ownership checks must behave identically in both modes. If they only run in the closed
+environment, they are untested exactly where development happens — and that is the mode
+nobody can debug from a desk.
 
 ## Pre-deployment checklist
 
@@ -287,14 +344,20 @@ Keycloak:
 - [ ] redirect URI and post-logout redirect URI registered on the client
 - [ ] clocks agree, and a non-zero `clockTolerance` is configured
 - [ ] sign in, reload the page, confirm the session survives
-- [ ] stop the BFF and confirm the app shows a retry, not a redirect loop
-- [ ] `IS_BLACK_ENV` mock mode exercises the full cookie path with no Keycloak running
+- [ ] make Keycloak unreachable and confirm the app shows a retry, not a redirect loop
+- [ ] `IS_BLACK_ENV` mock mode exercises the full cookie path with neither Keycloak nor
+      Vault running
+- [ ] the redirect URI registered on the client matches what the backend sends, exactly
 
 Secrets:
 
-- [ ] every credential comes from the vault service, none from `.env` or the image
+- [ ] every credential comes from Vault, none from `.env`, source or the image
+- [ ] `VAULT_TOKEN` is platform-injected; its TTL and renewal are understood
+- [ ] derived clients are memoised, so no request triggers a Vault round trip
+- [ ] secrets are Zod-parsed at the boundary
 - [ ] `local_secrets/` is gitignored and never committed
 - [ ] config validated at boot, process exits on anything missing
+- [ ] `IS_BLACK_ENV` grants no privileges, and ownership checks run in both modes
 
 TLS and build:
 

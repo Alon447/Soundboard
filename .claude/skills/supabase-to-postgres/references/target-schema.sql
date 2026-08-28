@@ -7,7 +7,7 @@
 -- Differences from supabase/migrations/*.sql, and why:
 --   * auth.users            -> app_users, a local mirror of Keycloak identities
 --   * no password_hash      -> Keycloak owns credentials
---   * no session table      -> Keycloak tokens (or a BFF cookie if hardening)
+--   * no session table      -> the session is an httpOnly cookie holding the ID token
 --   * no RLS / auth.uid()   -> ownership enforced in the API layer
 --   * storage bucket        -> sound_assets.object_key pointing into S3
 --   * file_url / storage_path / custom_file_url dropped entirely
@@ -224,7 +224,7 @@ create index user_sounds_user_position_idx on user_sounds (user_id, position);
 --     `set local request.jwt.claim.sub` and a locally defined auth.uid().
 --     See docs/backend-portability.md for that variant.
 --   * password_hash / app_sessions. Keycloak owns credentials, and the session
---     lives in the httpOnly cookies set by the auth BFF. See
+--     lives in the httpOnly cookie set by our own /auth/callback route. See
 --     docs/target-architecture.md.
 --   * Keycloak role columns. yanshuf3 uses realm/client roles for two coarse
 --     gates only and computes everything finer in the database; Soundboard needs

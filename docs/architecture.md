@@ -136,10 +136,10 @@ No realtime subscriptions, no RPC, no edge functions.
 ## Related reading
 
 - [`target-architecture.md`](./target-architecture.md) — the stack this moves to:
-  PostgreSQL, S3, a Keycloak cookie BFF and a Node API, plus the planned workspace
-  layout.
-- [`yanshuf3-conventions.md`](./yanshuf3-conventions.md) — the sibling project already
-  running on that stack: what to copy, what not to, and what it does not answer.
+  PostgreSQL, S3, Keycloak and Vault behind a single Node backend, plus the planned
+  workspace layout.
+- [`house-conventions.md`](./house-conventions.md) — the two sibling projects already
+  running on that stack: what to copy, what not to, and what they do not answer.
 - [`backend-portability.md`](./backend-portability.md) — why Supabase does not port,
   and which alternatives were rejected.
 - [`supabase-surface-inventory.md`](./supabase-surface-inventory.md) — the
