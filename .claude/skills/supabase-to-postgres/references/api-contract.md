@@ -12,46 +12,68 @@ Stack: Fastify + `pg` + `@aws-sdk/client-s3` + `jose`. One process.
 
 ## Auth model
 
-Keycloak issues tokens; the API validates them. There are **no** signup, login,
-logout or password endpoints — that is the whole point of using Keycloak.
+Keycloak owns authentication, via a **cookie BFF**. There are **no** signup, login,
+logout or password endpoints in this API — that is the whole point of using Keycloak,
+and `../yanshuf3` already runs exactly this flow against the same realm.
 
-Default: the SPA runs Authorization Code + PKCE and sends
-`Authorization: Bearer <access_token>`. The API validates with `jose`:
+The BFF (`/auth/oidc/login-redirect`, `/auth/oidc/callback`,
+`/auth/oidc/validate-session`) completes a server-side Authorization Code flow as a
+confidential client and sets `id_token` and `access_token` as **httpOnly cookies** on
+the app's own origin. The SPA never sees a token, and the frontend's only auth action
+is a full-page navigation to `login-redirect` with the return URL in `state`.
+
+Per request, this API then either:
+
+- **delegates** to the BFF, posting the two cookies to `validate-session` and getting
+  claims back — what yanshuf3's Node backend does, and the least code if `auth-service`
+  is shared infrastructure; or
+- **verifies in-process** with `jose`, if Soundboard runs its own:
 
 ```ts
-const jwks = createRemoteJWKSet(new URL(`${OIDC_ISSUER}/protocol/openid-connect/certs`));
+const jwks = createRemoteJWKSet(new URL(`${OIDC_ISSUER_URL}/protocol/openid-connect/certs`));
 const { payload } = await jwtVerify(token, jwks, {
-  issuer: OIDC_ISSUER,
-  audience: OIDC_AUDIENCE,
+  issuer: OIDC_ISSUER_URL,   // must be byte-identical to the iss claim
+  audience: OIDC_AUDIENCE,   // yanshuf3 skips this; do not skip it
+  clockTolerance: '30s',     // yanshuf3 uses zero; allow a little
 });
 ```
 
-Then resolve the local user and attach it to the request:
+Ask which before building. Either way, resolve the local user and attach it to the
+request:
 
-1. `select * from app_users where oidc_sub = $1`
-2. else `select * from app_users where email = $1`, and `update … set oidc_sub = $2`
+1. `select * from app_users where upn = $1`
+2. else `select * from app_users where email = $1`, and `update … set upn = $2`
    — **this is what reconnects an imported user to their existing board**
 3. else insert a new row
 
-Require `email_verified` before trusting the email in step 2.
+The identifying claim is **`upn`**, uppercased once at this boundary — not `sub`, which
+yanshuf3 never reads. Require `email_verified` before trusting the email in step 2.
+Cache the resolved user rather than querying per request.
 
-**`req.user.id` is the local `app_users.id`, never the raw `sub`.** Every ownership
+**`req.user.id` is the local `app_users.id`, never the raw claim.** Every ownership
 column references it. Ignore any `user_id` / `owner_id` in a request body.
 
-**A valid token is not authorization.** Keycloak says who the caller is; only the
-API knows which pads are theirs.
+**A valid token is not authorization.** Keycloak says who the caller is; only this API
+knows which pads are theirs. Using Keycloak "only to identify the user, not to block the
+app" is a fine product decision and does not relax this — not gating the app is a
+different thing from letting user A delete user B's board.
 
-Alternative: a BFF, where the API completes the code flow and issues an httpOnly
-cookie. More server code, but no token in JavaScript and `fetch(url, { credentials:
-'same-origin' })` is authenticated everywhere — including the audio endpoint, which
-solves the `getBuffer` problem below for free. Decide before building the audio route.
+### Why cookies rather than a bearer header
 
-### The one endpoint the client cannot authenticate today
+`getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers. Under bearer auth the
+audio route would 401, so uploaded sounds would stop playing while built-ins kept
+working — a confusing, partial failure. Cookies are sent automatically, so
+`fetch(url, { credentials: 'same-origin' })` authenticates every route including audio,
+with no change to the playback path.
 
-`getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers. With bearer auth on
-`/api/shared-sounds/:id/audio`, uploaded sounds stop playing and built-ins keep
-working. Either attach the token in `getBuffer` via a module-level accessor, or use
-the BFF cookie. This is a decision, not an implementation detail.
+Do not introduce a bearer-only route for audio later; it reopens this.
+
+### Mock mode
+
+Copy yanshuf3's `IS_BLACK_ENV` switch: with it set, no IdP is contacted, the callback is
+reached with a mock code, and validation synthesizes claims from env vars while the
+cookie path still runs. It is how the auth stack gets developed outside the closed
+network.
 
 ## Endpoints
 
@@ -61,8 +83,13 @@ the BFF cookie. This is a decision, not an implementation detail.
 | --- | --- | --- |
 | GET | `/api/me` | `{ id, email, user_metadata: { name } }` or 401 |
 
-Called once on load to resolve the local user and warm the mirror row. The client
-maps this onto the existing `useAuth` context shape.
+Called once on load to resolve the local user and warm the mirror row. The client maps
+this onto the existing `useAuth` context shape, so `App.tsx` needs no changes.
+
+A 401 means "no valid session" and the client responds by navigating to
+`/auth/oidc/login-redirect`. Distinguish it from 502, which means the BFF or Keycloak is
+unreachable — yanshuf3 maps `ECONNREFUSED` to `badGateway` specifically so the frontend
+shows a retry instead of bouncing into a redirect loop. Copy that.
 
 ### Board
 
@@ -172,11 +199,8 @@ type Result<T> = { data: T | null; error: { message: string } | null };
 
 async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> {
   try {
-    const res = await fetch(path, {
-      credentials: 'same-origin',
-      ...init,
-      headers: { ...authHeader(), ...init?.headers },
-    });
+    // credentials only — the session is an httpOnly cookie, there is no token to attach
+    const res = await fetch(path, { credentials: 'same-origin', ...init });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       return { data: null, error: { message: body.error?.message ?? `HTTP ${res.status}` } };
@@ -190,10 +214,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> 
 
 Errors: `{ "error": { "code": "...", "message": "..." } }`. Never leak PostgreSQL or
 S3 error text — it exposes schema, constraint names, bucket names and endpoints. Map
-known failures to codes and log the original server-side.
+known failures to codes and log the original server-side. Follow yanshuf3's convention
+of an error factory plus `next(err)` rather than `res.status(500)` inline.
 
-401 should make the client re-run the OIDC flow, the same way a null session renders
-`<AuthPage />` today.
+401 makes the client navigate to the BFF's `login-redirect`. 502 means the BFF or
+Keycloak is down — show a retry, do not redirect.
 
 ## Type changes
 
@@ -215,11 +240,23 @@ id, which keeps the storage layer private.
 
 - Set `Cross-Origin-Opener-Policy: same-origin` and
   `Cross-Origin-Embedder-Policy: require-corp` on the HTML response, or ffmpeg.wasm's
-  multi-threaded core fails. `vite.config.ts` only covers dev and preview.
-- Use a `pg.Pool`, not a connection per request.
-- `pg` may need `ssl: { ca }` for an internal CA; S3 and Keycloak may need
-  `NODE_EXTRA_CA_CERTS`.
-- Pass S3 credentials explicitly and set `forcePathStyle: true`. See the
-  `airgap-readiness` skill for why the default credential chain is a hazard here.
+  multi-threaded core fails. `vite.config.ts` only covers dev and preview, and
+  yanshuf3's nginx does not set them because nothing there needs isolation.
+- **Secrets come from the vault service, not `.env`** — `getSecret('s3')`,
+  `getSecret('db/postgres/<env>')`, `getSecret('idp/keycloack/soundboard')`. Env vars
+  are for non-secret wiring only.
+- Use a `pg.Pool`, not a connection per request. yanshuf3 splits read and write pools
+  from one vault secret and probes both with `SELECT 1` at startup; copy the probe and
+  the graceful `pool.end()` on SIGTERM.
+- `pg` may need `ssl: { ca }` for an internal CA; S3 and Keycloak need
+  `NODE_EXTRA_CA_CERTS`. Do **not** copy yanshuf3's blanket
+  `rejectUnauthorized: false`.
+- Pass S3 credentials explicitly and set `forcePathStyle: true` — confirmed required by
+  yanshuf3. See the `airgap-readiness` skill for why the default credential chain is a
+  hazard here.
+- Do not auto-create the bucket on write the way yanshuf3 does; that needs
+  bucket-admin credentials in production. Provision it once, out of band.
+- Bucket name comes from config, never a literal in a controller.
 - Parameterised queries everywhere. No string interpolation into SQL.
-- Fail fast at boot on missing environment variables rather than at first request.
+- Validate config with Zod at boot and exit on failure. No fallback values for things
+  the architecture guarantees.

@@ -23,12 +23,20 @@ What the environment provides, and what each piece replaces:
 | --- | --- |
 | PostgreSQL | PostgREST-backed tables |
 | S3-compatible object storage | Supabase Storage |
-| Keycloak | GoTrue |
+| Keycloak, via a cookie BFF | GoTrue |
+| a vault service | secrets that would otherwise sit in `.env` |
 | a Node process | the glue: ownership checks, S3 proxying, seeding |
+
+**`../yanshuf3` already runs on this exact stack**, against the same Keycloak and the
+same S3. Read `docs/yanshuf3-conventions.md` before designing anything — most of the
+decisions are already made there, and a second app in the same environment doing auth
+and storage differently is a tax on whoever operates both.
 
 Documents, in the order they are useful:
 
 - `docs/target-architecture.md` — the decided design. Start here.
+- `docs/yanshuf3-conventions.md` — the reference implementation: copy list, do-not-copy
+  list, and the gaps it does not cover.
 - `docs/backend-portability.md` — why, and what was rejected.
 - `docs/supabase-surface-inventory.md` — every call site, as a checklist.
 - `docs/architecture.md` — how the app works today.
@@ -68,12 +76,18 @@ identity, not permission.** Authentication and authorization are separate, and
 conflating them is the easiest way to build a system where any user can delete
 anyone's board.
 
-**Never use Keycloak's `sub` as a foreign key.** It is a different UUID from the
-Supabase user id already in `user_sounds.user_id`. Ownership columns reference
-`app_users.id`, and `app_users` carries `oidc_sub` as a separate resolvable column.
-The resolve-by-`sub`-then-`email` sequence in `docs/target-architecture.md` is what
-reconnects imported users to their existing boards. Getting this wrong orphans
-every board in the database.
+**Never use the Keycloak identity claim as a foreign key.** The claim here is `upn` (an
+employee number, what yanshuf3 keys everything on — `sub` is never read in this
+environment), and it differs from the Supabase user id already in
+`user_sounds.user_id`. Ownership columns reference `app_users.id`; `app_users` carries
+`upn` as a separate resolvable column. The resolve-by-`upn`-then-`email` sequence in
+`docs/target-architecture.md` is what reconnects imported users to their existing
+boards. Getting this wrong orphans every board — and fails silently, because the user
+just sees a freshly seeded empty board.
+
+**Secrets come from the vault service, not `.env`.** `getSecret('s3')`,
+`getSecret('db/postgres/<env>')`, `getSecret('idp/keycloack/soundboard')`. Env vars are
+for non-secret wiring only, validated with Zod at boot with no fallback values.
 
 **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject` first,
 then insert the rows in one transaction. A failure then leaves an orphaned object,
@@ -101,16 +115,21 @@ Each phase builds and typechecks on its own. No big-bang cutover.
    id. Key the decoded-buffer cache in `App.tsx` on the sound id rather than the URL
    — cheap now, awkward later, and it keeps presigned URLs available as an option.
    Ship on Supabase and confirm no regression.
-3. **Restructure** — move to `apps/web` + `apps/api` + `packages/shared`. Own
-   commit, no behaviour change. Update every path pattern in `.kiro/steering/*.md`
-   and `.github/instructions/*` in the same commit.
+3. **Restructure** — move to `frontend/` + `backend/` + `packages/shared`, matching
+   yanshuf3's workspace naming. Own commit, no behaviour change. Update every path
+   pattern in `.kiro/steering/*.md`, `.github/instructions/*` and
+   `scripts/sync-agent-docs.mjs` in the same commit.
 4. **Backend** — migrations from `references/target-schema.sql`, the API from
-   `references/api-contract.md`, the S3 client, Keycloak token validation. Import
-   the captured data. Test against the real PostgreSQL, S3 and Keycloak — versions,
-   path-style quirks, privileges and realm config are what will bite, not logic.
-5. **Flip** — reimplement `src/lib/api.ts` over `fetch`, swap `useAuth.tsx` to
-   `react-oidc-context`, reduce `AuthPage.tsx` to a sign-in button, delete
-   `@supabase/supabase-js` and the `VITE_SUPABASE_*` vars.
+   `references/api-contract.md`, the S3 client, the vault client, and session
+   validation. Import the captured data. Test against the real PostgreSQL, S3 and
+   Keycloak — versions, path-style quirks, privileges and realm config are what will
+   bite, not logic. Build `IS_BLACK_ENV` mock mode first so this is developable
+   offline.
+5. **Flip** — reimplement `src/lib/api.ts` over `fetch` with
+   `credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with
+   `GET /api/me` plus a redirect-to-BFF `login()`, **delete** `AuthPage.tsx`, then
+   delete `@supabase/supabase-js` and the `VITE_SUPABASE_*` vars. No OIDC client
+   library gets added.
 6. **Harden** — see the `airgap-readiness` skill.
 
 ## Keep these interfaces stable
@@ -128,22 +147,22 @@ Changing them turns a contained port into a rewrite.
   removeSound, moveSound, updateGain, refetch }
 ```
 
-Map the OIDC profile onto `user`: `sub` → `id`, `email` → `email`,
-`name ?? preferred_username` → `user_metadata.name`. Do that and `App.tsx`,
-`useUserSounds` and `useSharedSounds` need no changes at all.
+`GET /api/me` populates `user`: `app_users.id` → `id`, `email` → `email`, display name
+→ `user_metadata.name`. Do that and `App.tsx`, `useUserSounds` and `useSharedSounds`
+need no changes at all. Note `user.id` is the **local** id, not the Keycloak claim.
 
 `BoardSound.audio_path` must stay a plain fetchable, Web-Audio-decodable URL.
 
-## The trap that breaks playback silently
+## The trap the cookie BFF exists to avoid
 
 `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers. If
-`/api/shared-sounds/:id/audio` requires `Authorization: Bearer <token>`, **uploaded
-sounds stop playing while built-ins keep working** — because built-ins are static
+`/api/shared-sounds/:id/audio` required `Authorization: Bearer <token>`, **uploaded
+sounds would stop playing while built-ins kept working** — because built-ins are static
 files. Easy to misdiagnose as a storage problem.
 
-Fix by attaching the token in `getBuffer` via a module-level accessor set by the
-auth provider, or by moving to a BFF with an httpOnly session cookie so
-`credentials: 'same-origin'` handles it. Decide before writing the audio endpoint.
+Cookies are sent automatically, which is one of the three reasons the design uses a BFF
+rather than SPA-side PKCE. **Do not add a bearer-only route for audio later**; it
+reopens exactly this.
 
 ## Bugs to fix while you are in here
 
@@ -163,14 +182,18 @@ Do not port these forward.
 
 Ask rather than assume:
 
+- **Is `auth-service` shared infrastructure or per-app?** If shared, Soundboard writes
+  no auth code at all. If per-app, stand up a copy or verify tokens in-process. Top
+  question.
+- Which S3 implementation (MinIO, Ceph RGW, StorageGRID, ECS)? yanshuf3 never names it.
+  A dedicated bucket or a prefix in a shared one? Credentials provisioned? Backup and
+  retention policy on it?
+- A Keycloak client for Soundboard and a vault path for its credentials, or does it
+  reuse yanshuf3's client?
+- Do Keycloak `upn`/email values match the current Supabase accounts? This decides
+  whether existing boards reconnect. Diff before cutover.
+- Is `email_verified` trustworthy in that realm? Step 2 of identity resolution needs it.
 - PostgreSQL major version; `CREATE EXTENSION` / `CREATE SCHEMA` permitted?
-- Which S3 implementation (MinIO, Ceph RGW, StorageGRID, ECS)? Bucket provisioned
-  with credentials? Path-style required? Backup policy on the bucket?
-- Keycloak: client provisioned, public client with PKCE allowed, redirect URI
-  configurable? Is `email_verified` trustworthy in that realm?
-- Do Keycloak account emails match the current Supabase accounts? This decides
-  whether existing boards reconnect.
-- Any objection to access tokens in browser memory? If so, BFF from the start.
 - Internal CA certificate location, for PostgreSQL, S3 and Keycloak.
 - Realistic user count, upload count, max clip size.
 
@@ -179,12 +202,16 @@ Ask rather than assume:
 `npm run build` and `npm run typecheck` after any app change, and
 `npm run docs:check` if you touched the skills.
 
-End to end, after the flip: sign in via Keycloak, first-login seeding produces 9
-pads, upload a `.mov` (exercises ffmpeg, S3 write, and serve), play a built-in and
-an uploaded pad, press the same pad twice and confirm the second press does not
-refetch, reorder, change gain, sign out, then sign in as a second user and confirm
-you cannot see or delete the first user's pads.
+End to end, after the flip: sign in via Keycloak, first-login seeding produces 9 pads,
+upload a `.mov` (exercises ffmpeg, S3 write, and serve), play a built-in and an uploaded
+pad, press the same pad twice and confirm the second press does not refetch, reorder,
+change gain, then sign in as a second user and confirm you cannot see or delete the
+first user's pads.
 
-For an imported user specifically: confirm their pre-migration board appears. If it
-does not, the identity mapping is wrong — check `app_users.oidc_sub` was attached to
-the existing row rather than a new row being created.
+For an imported user specifically: confirm their pre-migration board appears. If it does
+not, the identity mapping is wrong — check `app_users.upn` was attached to the existing
+row rather than a new row being created.
+
+Also verify the failure modes, which are where this design differs from the old one:
+stop the BFF and confirm the app shows a retry rather than a redirect loop, and confirm
+`IS_BLACK_ENV` mock mode still exercises the full cookie path with no Keycloak running.

@@ -57,9 +57,10 @@ next to it.
 - Built-in pads are declared in `src/lib/sounds.ts`; bundled audio lives in
   `public/sounds/`, pad images in `public/images/`.
 - Keep mp3 and mp4 support working when touching playback.
-- Auth today is Supabase email + password; the target is Keycloak OIDC. Do not add
-  any *other* auth flow (magic link, OTP, social login) — the direction is to delete
-  auth code, not add it.
+- Auth today is Supabase email + password. The target is Keycloak SSO via a cookie
+  BFF, with **no OIDC library in the browser** and no login UI at all — `AuthPage.tsx`
+  gets deleted, not rewritten. Do not add any other auth flow, and do not add an OIDC
+  client package.
 - Schema changes go in `supabase/migrations/` while still on Supabase, applied with
   `npx supabase db push`. New schema for the target stack goes in `db/migrations/`.
 - Keep changes minimal and scoped to what was asked.
@@ -67,28 +68,37 @@ next to it.
 ## The migration that shapes all backend work
 
 The target is a closed environment providing **PostgreSQL, S3-compatible object
-storage and Keycloak**, with no outbound internet, plus a Node API to tie them
-together. This is a live requirement.
+storage, Keycloak and a vault service**, with no outbound internet, plus a Node API to
+tie them together. This is a live requirement.
+
+**`../yanshuf3` already runs on that stack** — same Keycloak, same S3, same vault. Read
+`docs/yanshuf3-conventions.md` before designing anything backend. Most decisions are
+already made there, and it also documents which of its patterns are warts to avoid.
 
 Supabase Storage is not a Postgres feature, and browsers cannot speak the PostgreSQL
 wire protocol. Porting means rebuilding the HTTP layer Supabase provided, not
 swapping a database. If asked whether the app can just point at the closed-environment
 PostgreSQL, the answer is no — explain why before proposing anything.
 
-Five rules, in rough order of how expensive they are to get wrong:
+Six rules, in rough order of how expensive they are to get wrong:
 
-1. **Never use Keycloak's `sub` as a foreign key.** It differs from the Supabase user
-   id already in `user_sounds.user_id`. Ownership references `app_users.id`, with
-   `oidc_sub` resolved per request. Getting this wrong orphans every board — silently,
-   because the user just sees a freshly seeded empty one.
+1. **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
+   (an employee number — `sub` is never read in this environment), and it differs from
+   the Supabase user id already in `user_sounds.user_id`. Ownership references
+   `app_users.id`, with `upn` resolved per request. Getting this wrong orphans every
+   board — silently, because the user just sees a freshly seeded empty one.
 2. **Never persist an absolute URL to a media file.** `shared_sounds.file_url` holding
    a signed URL is why the current data cannot move. Store a reference, derive the URL.
 3. **A valid token proves identity, not permission.** Keycloak does not do
    authorization. Derive the user server-side and scope every mutation; the client
-   currently sends `user_id` itself and deletes with no user filter.
+   currently sends `user_id` itself and deletes with no user filter. "Use Keycloak only
+   to identify the user, not to block the app" is a fine product decision and does not
+   relax this — not gating the app is different from letting one user delete another's
+   board.
 4. **Write S3 before PostgreSQL.** No shared transaction, so order the writes to fail
    into a harmless orphaned object rather than a row pointing at nothing.
-5. **Nothing may require the public internet**, at runtime or build time.
+5. **Secrets come from the vault service**, not `.env`.
+6. **Nothing may require the public internet**, at runtime or build time.
 
 ## Where the detail lives
 
@@ -97,7 +107,8 @@ Read these before proposing backend changes rather than reasoning from scratch:
 | Document | Contents |
 | --- | --- |
 | `docs/architecture.md` | how the app works today: sound sources, playback, upload flow, known rough edges |
-| `docs/target-architecture.md` | the decided target: Node API, S3 design, Keycloak flow, identity mapping, workspace layout |
+| `docs/target-architecture.md` | the decided target: Node API, S3 design, Keycloak BFF, identity mapping, workspace layout |
+| `docs/yanshuf3-conventions.md` | the sibling project on the same stack: copy list, do-not-copy list, gaps |
 | `docs/backend-portability.md` | why Supabase does not port, options rejected, phased plan, open questions |
 | `docs/supabase-surface-inventory.md` | every Supabase call site, table, column and policy as a port checklist |
 
@@ -117,8 +128,11 @@ Skills in `.claude/skills/`:
 - COOP/COEP headers are set by a Vite plugin for dev and preview only. Production
   needs them or `SharedArrayBuffer` is undefined and ffmpeg-mt fails to load.
 - `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers and caches decoded
-  buffers keyed by that URL. A bearer-protected audio endpoint breaks uploaded sounds
-  only; a presigned URL would break the cache entirely.
+  buffers keyed by that URL. A bearer-protected audio endpoint would break uploaded
+  sounds only — which is why auth is a cookie BFF. A presigned URL would break the
+  cache entirely.
+- `npm ci` against the Nexus mirror fails on lockfile integrity hashes unless
+  `stripLockIntegrity` runs first. yanshuf3 has the script.
 - `numeric` is returned as a JSON number by PostgREST but as a **string** by
   `node-postgres`. `gain` is `numeric`.
 - The AWS SDK's default credential chain probes EC2 instance metadata, which hangs

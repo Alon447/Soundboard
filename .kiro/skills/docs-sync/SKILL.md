@@ -41,6 +41,7 @@ mechanically derived from it. Keep the prose in one place and cross-reference.
 | `docs/backend-portability.md` | why Supabase does not port, options considered, tradeoffs, phased plan, open questions | the analysis, an option's viability, or the plan changes |
 | `docs/target-architecture.md` | the decided target: monorepo layout, Node API, S3, Keycloak, dev/prod topology | any target-stack decision changes |
 | `docs/supabase-surface-inventory.md` | every Supabase call site, table, column, policy, as a port checklist | a Supabase call site is added, removed or ported |
+| `docs/yanshuf3-conventions.md` | the sibling project on the same closed-environment stack: copy list, do-not-copy list, gaps | a yanshuf3 pattern is adopted, rejected, or found to have changed |
 | `.kiro/skills/supabase-to-postgres/` | how to execute the port; `references/` holds the target schema, API contract, migration runbook | the port procedure, schema or API contract changes |
 | `.kiro/skills/airgap-readiness/` | offline/on-prem blockers and the pre-deployment checklist | a new external dependency, header, cert or hosting requirement appears |
 | `.kiro/skills/docs-sync/` | this contract and the file map | a doc, skill, steering or instruction file is added, renamed or removed |
@@ -85,13 +86,15 @@ contradiction next to it.
 - the file inventory tables in `docs/architecture.md`
 - `SOURCE` / `TARGET` in `scripts/sync-agent-docs.mjs`
 
-The planned move to `apps/web/` + `apps/api/` will invalidate every `src/lib/**`
-pattern in this repo. Update them in the same commit as the move.
+The planned move to `frontend/` + `backend/` + `packages/shared/` will invalidate every
+`src/lib/**` pattern in this repo. Update them in the same commit as the move.
 
 **Record decisions, not just outcomes.** When a choice is made between real
 alternatives, note what was rejected and why. `docs/backend-portability.md` is the
-place for that. A future reader needs to know that `bytea` was the plan before S3
-turned out to be available, or they will re-litigate it.
+place for that, and `docs/target-architecture.md` carries a table tracking how each
+decision has changed across revisions. A future reader needs to know that `bytea` was
+the plan before S3 turned out to be available, and that SPA-side PKCE was the plan
+before yanshuf3's cookie BFF was found — otherwise both get re-litigated.
 
 ## Before finishing a task
 

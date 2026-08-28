@@ -1,6 +1,6 @@
 ---
-applyTo: "src/lib/**,supabase/**,src/components/AuthPage.tsx,apps/api/**,apps/web/src/lib/**,packages/shared/**,db/**"
-description: "Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3 and Keycloak in a closed environment."
+applyTo: "src/lib/**,supabase/**,src/components/AuthPage.tsx,backend/**,frontend/src/lib/**,packages/shared/**,db/**"
+description: "Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3, Keycloak and a vault service in a closed environment."
 ---
 
 # Portability-critical layer
@@ -10,7 +10,9 @@ closed environment, which provides **PostgreSQL, S3-compatible object storage an
 Keycloak**, no Supabase, and no outbound internet — plus a Node API to tie them
 together.
 
-Design: `docs/target-architecture.md`. Analysis and rejected options:
+Design: `docs/target-architecture.md`. **Reference implementation:
+`docs/yanshuf3-conventions.md`** — `../yanshuf3` already runs on this stack, so copy its
+conventions rather than inventing new ones. Analysis and rejected options:
 `docs/backend-portability.md`. Call-site checklist:
 `docs/supabase-surface-inventory.md`. Target schema, API contract and migration
 runbook: `.kiro/skills/supabase-to-postgres/references/` (mirrored under
@@ -26,12 +28,13 @@ PostgreSQL" is no.
 
 ## Rules
 
-1. **Never use Keycloak's `sub` as a foreign key.** It differs from the Supabase user
-   id already stored in `user_sounds.user_id` and `shared_sounds.owner_id`. Ownership
-   columns reference `app_users.id`; `oidc_sub` is a separate column resolved per
-   request (by `sub`, falling back to `email` and attaching the `sub`). Getting this
-   wrong orphans every existing board, and fails **silently** — the user signs in and
-   sees a freshly seeded empty board.
+1. **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
+   (an employee number — `sub` is never read in this environment), and it differs from
+   the Supabase user id already stored in `user_sounds.user_id` and
+   `shared_sounds.owner_id`. Ownership columns reference `app_users.id`; `upn` is a
+   separate column resolved per request (by `upn`, falling back to `email` and attaching
+   the `upn`). Getting this wrong orphans every existing board, and fails **silently** —
+   the user signs in and sees a freshly seeded empty board.
 2. **No absolute URLs to media in the database.** `shared_sounds.file_url` stores a
    10-year Supabase signed URL, which is exactly why the existing data is unportable.
    Store an asset reference and derive the URL on the client
@@ -72,8 +75,10 @@ PostgreSQL" is no.
 `AudioBuffer`s keyed by that URL string.
 
 - A bearer-protected audio endpoint breaks **uploaded** sounds while built-ins keep
-  working, because built-ins are static files. Attach the token in `getBuffer`, or
-  use a cookie-based BFF. Decide before writing the audio route.
+  working, because built-ins are static files. This is one of the three reasons auth is
+  a **cookie BFF** rather than SPA-side PKCE — cookies are sent automatically, so
+  `credentials: 'same-origin'` authenticates the audio route with no change to the
+  playback path. Do not add a bearer-only audio route later.
 - A presigned URL rotates per request, so the buffer cache would never hit. Key the
   cache on the sound id if presigning is ever adopted.
 
@@ -99,23 +104,27 @@ No big-bang cutover.
 2. **Seam**: add `src/lib/api.ts` over supabase-js returning the same
    `{ data, error }` shape. Derive `audio_path` from the shared-sound id. Key the
    buffer cache on the sound id. Ship on Supabase first.
-3. **Restructure** to `apps/web` + `apps/api` + `packages/shared`, own commit,
-   updating every path pattern in `.kiro/steering/` and `.github/instructions/`.
+3. **Restructure** to `frontend/` + `backend/` + `packages/shared` (matching yanshuf3),
+   own commit, updating every path pattern in `.kiro/steering/`,
+   `.github/instructions/` and `scripts/sync-agent-docs.mjs`.
 4. **Backend**: migrations with no `auth.`/`storage.` references, the Node API, the S3
-   client, Keycloak validation. Test against the real PostgreSQL, S3 and Keycloak.
-5. **Flip**: `src/lib/api.ts` over `fetch`, `useAuth` onto `react-oidc-context`,
-   `AuthPage` down to a sign-in button, remove `@supabase/supabase-js`.
+   client, the vault client, session validation. Build `IS_BLACK_ENV` mock mode first so
+   this is developable offline. Test against the real PostgreSQL, S3 and Keycloak.
+5. **Flip**: `src/lib/api.ts` over `fetch` with `credentials: 'same-origin'`, `useAuth`
+   onto `GET /api/me` plus a redirect-to-BFF `login()`, **delete** `AuthPage.tsx`,
+   remove `@supabase/supabase-js`. Add no OIDC client library.
 6. **Harden**: see `airgap-readiness.instructions.md`.
 
 ## Ask, don't assume
 
-PostgreSQL version and whether `CREATE EXTENSION` is permitted; which S3
-implementation and whether a bucket with credentials exists; whether path-style is
-required; the bucket's backup policy; whether a Keycloak client exists that can be
-public with PKCE; whether Keycloak account emails match the current Supabase accounts
-(this decides whether existing boards reconnect); whether `email_verified` is
-trustworthy; whether tokens in browser memory are acceptable or a BFF is required;
-where the internal CA certificate lives.
+Whether `auth-service` is shared infrastructure or per-app (top question — decides
+whether any auth code gets written at all); PostgreSQL version and whether
+`CREATE EXTENSION` is permitted; which S3 implementation, and whether Soundboard gets a
+dedicated bucket or a prefix in a shared one, with credentials and a backup policy;
+whether a Keycloak client and vault path exist for Soundboard or it reuses yanshuf3's;
+whether Keycloak `upn`/email values match the current Supabase accounts (this decides
+whether existing boards reconnect); whether `email_verified` is trustworthy; where the
+internal CA certificate lives.
 
 ## Verify
 

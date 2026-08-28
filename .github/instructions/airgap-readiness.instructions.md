@@ -1,5 +1,5 @@
 ---
-applyTo: "src/lib/ffmpegConvert.ts,vite.config.ts,index.html,src/lib/sounds.ts,src/components/add-sound/**,public/**,apps/web/vite.config.ts,apps/api/src/storage/**,apps/api/src/auth/**,apps/api/src/config.ts"
+applyTo: "src/lib/ffmpegConvert.ts,vite.config.ts,index.html,src/lib/sounds.ts,src/components/add-sound/**,public/**,frontend/vite.config.ts,frontend/nginx.conf,backend/src/utils/**,backend/src/config/**,Dockerfile*,docker-compose*.yaml"
 description: "Offline / air-gapped deployment blockers: the ffmpeg.wasm core fetched from unpkg.com, COOP/COEP headers, external references, asset filenames, upload size limits, the S3 client's metadata probe, and Keycloak issuer-URL mismatches."
 ---
 

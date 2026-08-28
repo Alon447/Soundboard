@@ -1,15 +1,20 @@
 ---
 inclusion: fileMatch
-fileMatchPattern: ["src/lib/**", "supabase/**", "src/components/AuthPage.tsx", "apps/api/**", "apps/web/src/lib/**", "packages/shared/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md"]
+fileMatchPattern: ["src/lib/**", "supabase/**", "src/components/AuthPage.tsx", "backend/**", "frontend/src/lib/**", "packages/shared/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/yanshuf3-conventions.md"]
 ---
 
 # You are editing the portability-critical layer
 
 This app is migrating off Supabase into a closed environment that provides
-**PostgreSQL, S3-compatible object storage and Keycloak**, with no outbound internet.
-Every file matching this pattern is part of what has to change.
+**PostgreSQL, S3-compatible object storage, Keycloak and a vault service**, with no
+outbound internet. Every file matching this pattern is part of what has to change.
+
+`../yanshuf3` already runs on that stack. Copy its conventions rather than inventing
+new ones — a second app in the same environment doing auth and storage differently is
+a tax on whoever operates both.
 
 Design: #[[file:docs/target-architecture.md]]
+Reference implementation: #[[file:docs/yanshuf3-conventions.md]]
 Analysis and rejected options: #[[file:docs/backend-portability.md]]
 
 ## Rules for changes here
@@ -29,11 +34,16 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    validated token server-side and scope every mutation. **A valid Keycloak token
    proves identity, not permission.**
 
-4. **Never use Keycloak's `sub` as a foreign key.** It differs from the Supabase user
-   id already stored in `user_sounds.user_id`. Ownership columns reference
-   `app_users.id`; `oidc_sub` is a separate column resolved per request. Getting this
-   wrong orphans every existing board — and fails silently, because the user just
+4. **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
+   (an employee number — `sub` is never read in this environment), and it differs from
+   the Supabase user id already stored in `user_sounds.user_id`. Ownership columns
+   reference `app_users.id`; `upn` is a separate column resolved per request. Getting
+   this wrong orphans every existing board — and fails silently, because the user just
    sees a freshly seeded empty board.
+
+4a. **Secrets come from the vault service**, not `.env`: `getSecret('s3')`,
+   `getSecret('db/postgres/<env>')`, `getSecret('idp/keycloack/soundboard')`. Env vars
+   are non-secret wiring only, Zod-validated at boot with no fallback values.
 
 5. **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject`
    first, then the rows in one transaction, so a failure leaves a harmless orphaned
@@ -61,7 +71,8 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
 `AudioBuffer`s keyed by that URL string. Two consequences:
 
 - A bearer-protected audio endpoint breaks uploaded sounds while built-ins keep
-  working. Attach the token in `getBuffer`, or use a cookie-based BFF.
+  working. This is why auth is a **cookie BFF** and not SPA-side PKCE — cookies are
+  sent automatically. Do not add a bearer-only audio route.
 - A presigned URL rotates per request, so the cache would never hit. Key the cache on
   the sound id if presigning is ever adopted.
 

@@ -1,19 +1,23 @@
 # Moving Soundboard off Supabase
 
-Target: a closed / air-gapped environment with no Supabase and no outbound
-internet. What it *does* have: **PostgreSQL, S3-compatible object storage, and
-Keycloak**, plus the ability to run a Node process.
+Target: a closed / air-gapped environment with no Supabase and no outbound internet.
+What it *does* have: **PostgreSQL, S3-compatible object storage, Keycloak, and a vault
+service**, plus the ability to run Node and Python processes.
 
-This document is the analysis — what breaks, which options were considered, and why.
-The decisions it arrives at are written up as a concrete design in
-[`target-architecture.md`](./target-architecture.md); read that if you want the
-answer rather than the reasoning.
+It also already runs `../yanshuf3` on that stack, which is the single most useful fact
+in this document — see [`yanshuf3-conventions.md`](./yanshuf3-conventions.md).
 
-> Earlier revisions of this document assumed PostgreSQL was the *only* thing
-> available, and recommended storing audio in a `bytea` column with hand-rolled
-> password auth. S3 and Keycloak being available changes both of those
-> recommendations. The rejected options are kept below, because "why not `bytea`"
-> is a question that will come up again.
+This document is the analysis: what breaks, which options were considered, and why. The
+decisions it arrives at are written up as a concrete design in
+[`target-architecture.md`](./target-architecture.md); read that if you want the answer
+rather than the reasoning.
+
+> This document has been revised twice as the environment became clearer. The first
+> revision assumed PostgreSQL was the *only* thing available and recommended audio in a
+> `bytea` column with hand-rolled password auth. The second added S3 and Keycloak. The
+> third replaced SPA-side PKCE with a cookie BFF after finding that a sibling project
+> already does it that way. Rejected options are kept deliberately — "why not `bytea`"
+> and "why not just use PKCE in the SPA" are questions that will come up again.
 
 ## Short answer to "can the way we store sounds keep working?"
 
@@ -131,9 +135,18 @@ from S3, a `bytea` column or a local disk is invisible to the client.
 
 ## Where does auth come from?
 
-Keycloak, via OIDC Authorization Code + PKCE. The full design — library choice,
-token validation, and the identity mapping that decides whether existing boards
-survive the move — is in [`target-architecture.md`](./target-architecture.md).
+Keycloak, via a **server-side Authorization Code flow in a BFF that sets httpOnly
+cookies**. No OIDC library in the browser, no token in JavaScript. The full design is
+in [`target-architecture.md`](./target-architecture.md).
+
+An earlier revision of this document recommended Authorization Code + PKCE with
+`oidc-client-ts` in the SPA. That was superseded once `../yanshuf3` turned out to
+already run exactly this flow against the same Keycloak — see
+[`yanshuf3-conventions.md`](./yanshuf3-conventions.md). The BFF wins on three counts:
+it is proven in this environment with a client already provisioned, it keeps tokens out
+of browser memory, and it removes the need to thread an access token into
+`getBuffer`'s bare `fetch(url)` — a trap that would otherwise have broken uploaded
+sounds while leaving built-ins working.
 
 Worth stating why this is the easy call even though the project does not care much
 about auth: **not caring about auth is the strongest argument for delegating it.**
@@ -146,12 +159,22 @@ The rejected alternative was a local `app_users` table with bcrypt hashes and an
 `app_sessions` table. That plan is only worth revisiting if the Keycloak realm turns
 out to be unavailable to this app.
 
+**Auth being a low priority for this project is the argument for the BFF, not against
+it.** There is no login UI to build and no auth code to own: `AuthPage.tsx` gets
+deleted rather than rewritten, and because Keycloak fronts corporate SSO an existing
+session round-trips back without the user seeing a form.
+
 Two things Keycloak does **not** solve, and it is important not to assume otherwise:
 
 - **Authorization.** Keycloak says who the user is. It has no idea which pads belong
   to them. Every ownership check stays the API's job.
-- **The identity mapping.** Keycloak's `sub` is not the Supabase user id already
-  stored in `user_sounds.user_id`. Getting this wrong orphans every existing board.
+- **The identity mapping.** The Keycloak claim identifying the user — `upn` in this
+  realm — is not the Supabase user id already stored in `user_sounds.user_id`. Getting
+  this wrong orphans every existing board.
+
+"Use Keycloak only to identify the user, not to block the app" is a reasonable product
+decision, and it changes nothing here. Not gating the app is a different thing from
+letting one user delete another's board.
 
 ## Where does the HTTP layer come from?
 
@@ -255,15 +278,16 @@ easiest thing to get wrong in this migration.
    `file_url` are the only handle you have on the uploaded audio. Once the closed
    environment is cut over, they are gone. Run the export while Supabase is still
    reachable.
-6. **Keycloak's `sub` is not the Supabase user id.** Using it directly as a foreign
-   key orphans every existing board. The `app_users` mirror table and the
-   resolve-by-`sub`-then-`email` sequence in
-   [`target-architecture.md`](./target-architecture.md) exist entirely to prevent
-   this. It is the single most destructive mistake available in this migration.
-7. **Playback fetches audio with no auth header.** `getBuffer` in `App.tsx` calls
-   bare `fetch(url)`. If the audio endpoint requires a bearer token, uploaded sounds
-   stop playing while built-ins keep working — a confusing failure. Either attach
-   the token in `getBuffer` or use a cookie-based BFF.
+6. **The Keycloak identity claim is not the Supabase user id.** Using `upn` (or `sub`)
+   directly as a foreign key orphans every existing board. The `app_users` mirror table
+   and the resolve-by-`upn`-then-`email` sequence in
+   [`target-architecture.md`](./target-architecture.md) exist entirely to prevent this.
+   It is the single most destructive mistake available in this migration, and it fails
+   silently — the user signs in and gets a freshly seeded empty board.
+7. **Playback fetches audio with no auth header.** `getBuffer` in `App.tsx` calls bare
+   `fetch(url)`. Under bearer-token auth, uploaded sounds would stop playing while
+   built-ins kept working. The cookie BFF makes this a non-issue, which is part of why
+   it was chosen — but do not reintroduce a bearer-only audio route.
 8. **A presigned URL would break the audio cache.** `App.tsx` keys its decoded
    `AudioBuffer` cache on the URL string. Presigned URLs rotate, so the cache would
    never hit. Key the cache on the sound id if you ever move to presigning.
@@ -285,6 +309,16 @@ Supabase's bcrypt password hashes in `auth.users.encrypted_password` used to mat
 back when the plan was local passwords. With Keycloak they are irrelevant — export
 `email` for the identity mapping and ignore the hashes.
 
+14. **`npm ci` needs the Nexus mirror, and the lockfile fights it.** A Nexus-proxied
+    registry serves tarballs whose integrity hashes do not match a lockfile generated
+    against the public registry, so `npm ci` fails with an error that does not point at
+    the mirror. yanshuf3 solves this with a `stripLockIntegrity` step run before
+    `npm ci`, plus a `checkNexusPackages` script that reports every missing package at
+    once. Reuse both rather than rediscovering the problem.
+15. **Secrets belong in the vault service, not `.env`.** The environment already runs
+    one, with a Redis mirror so vault being down does not take the app down. Env vars
+    are for non-secret wiring only.
+
 ## Recommended plan
 
 Phased so nothing is a big-bang cutover, and every phase is independently
@@ -304,10 +338,10 @@ than reading `file_url`, and key the decoded-buffer cache in `App.tsx` on the so
 id instead of the URL. Ship and confirm on Supabase.
 
 **Phase 1.5 — restructure the repository.**
-Move to the `apps/web` + `apps/api` + `packages/shared` workspace layout. Its own
-commit, no behaviour change, and much easier to do after Phase 1 has consolidated
-the data layer. Update every path pattern in the steering and instruction files in
-the same commit.
+Move to the `frontend/` + `backend/` + `packages/shared` workspace layout, matching
+yanshuf3's naming. Its own commit, no behaviour change, and much easier to do after
+Phase 1 has consolidated the data layer. Update every path pattern in the steering and
+instruction files, and in `scripts/sync-agent-docs.mjs`, in the same commit.
 
 **Phase 2 — stand up the new backend.**
 New migration set with no `auth.` or `storage.` references, the Node API, the S3
@@ -317,11 +351,12 @@ PostgreSQL, S3 and Keycloak, not local substitutes — versions, path-style quir
 privilege levels and realm configuration are what will bite.
 
 **Phase 3 — flip the seam.**
-Reimplement `src/lib/api.ts` over `fetch('/api/...')`, swap `useAuth.tsx` to
-`react-oidc-context`, reduce `AuthPage.tsx` to a sign-in button, then remove
-`@supabase/supabase-js`, the `supabase` CLI dev dependency and the
+Reimplement `src/lib/api.ts` over `fetch('/api/...')` with
+`credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with a
+`GET /api/me` call plus a redirect-to-BFF `login()`, **delete** `AuthPage.tsx`, then
+remove `@supabase/supabase-js`, the `supabase` CLI dev dependency and the
 `VITE_SUPABASE_*` vars. The two data hooks should barely change if Phase 1 was done
-properly.
+properly, and no OIDC client library gets added.
 
 **Phase 4 — harden for the closed environment.**
 Vendor the ffmpeg core, set COOP/COEP on the API's HTML response, rename the
@@ -332,11 +367,17 @@ path for uploads, and schedule the S3 reconciliation job. See the
 
 ## Open questions to settle before Phase 2
 
-Answered by the environment, so no longer open: something other than PostgreSQL can
-run (so the Node API is viable), object storage exists (so `bytea` is the fallback
-rather than the plan), and an identity provider exists (so no local passwords).
+Answered by the environment, so no longer open: something other than PostgreSQL can run
+(so the Node API is viable), object storage exists (so `bytea` is the fallback rather
+than the plan), an identity provider exists (so no local passwords), a vault service
+exists (so no secrets in `.env`), and the npm mirror is Nexus (so `npm ci` works with
+`stripLockIntegrity`).
 
 Still open, and each one can change the design:
+
+- **Is `auth-service` shared infrastructure or per-app?** If shared, Soundboard writes
+  no auth code at all. If per-app, we stand up a copy or verify tokens in-process. This
+  is now the top question.
 
 - Is the PostgreSQL server shared or dedicated? Do you have `CREATE EXTENSION` and
   `CREATE SCHEMA`, or only a single owned schema? What major version?

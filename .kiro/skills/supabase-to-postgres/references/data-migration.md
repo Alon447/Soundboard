@@ -6,6 +6,24 @@ Supabase project is paused, deleted, or simply unreachable from the closed
 environment, those bytes are unrecoverable. Nothing later in the migration can fix
 that.
 
+## Where the export lives: not in the repository
+
+`export/` is a **gitignored staging area on the machine running the migration**, not a
+project asset. Do not commit the audio.
+
+- Git stores every version of a binary forever, and audio does not diff or compress.
+  A few hundred clips would bloat the clone permanently, and the closed environment
+  clones this repo.
+- The bytes have a destination: the S3 bucket. Once they are uploaded and verified
+  (step 3), `export/` is a backup, not a source.
+- Keep it offline until the new environment has its own verified backups, then delete
+  it. Until that point it is the only copy.
+
+The one exception: if some uploaded clips are genuinely house sounds that everyone
+should get by default, promote *those* into `public/sounds/` and declare them in the
+built-in `SOUNDS` list. That is a deliberate product decision about a handful of files,
+not a way to store user uploads.
+
 ## 1. Export the rows
 
 Two options.
@@ -123,8 +141,7 @@ Order matters, because of the foreign keys:
 1. **`app_users`** — from `export/users.json`. Map `id` → `id` (**keep the original
    Supabase UUIDs**; every `user_sounds.user_id` and `shared_sounds.owner_id`
    references them), `email` → `email`, `raw_user_meta_data->>'name'` →
-   `display_name`. Leave `oidc_sub` **null** — it gets attached on first Keycloak
-   login.
+   `display_name`. Leave `upn` **null** — it gets attached on first Keycloak login.
 2. **`sound_assets`** — one row per deduplicated manifest entry: `bucket`,
    `object_key`, `content_type`, `byte_size`, `sha256` (as `bytea`, from the hex).
 3. **`shared_sounds`** — original `id`, `owner_id`, `owner_name`, `name`, `icon`,
@@ -143,16 +160,19 @@ This is the step that decides whether people's boards survive, and it is easy to
 wrong because nothing fails loudly — users simply sign in and see an empty board that
 gets seeded with the 9 built-ins, silently orphaning their old pads.
 
-The mechanism is the resolve sequence in the API: look up `oidc_sub`, fall back to
-`email`, and attach the `sub` to the matched row. Imported rows start with
-`oidc_sub = null`, so the first Keycloak login of each user takes the email branch
-and binds the two identities.
+The mechanism is the resolve sequence in the API: look up `upn`, fall back to `email`,
+and attach the `upn` to the matched row. Imported rows start with `upn = null`, so the
+first Keycloak login of each user takes the email branch and binds the two identities.
+
+`upn` is the identifying claim in this realm — an employee number like `T1001001`, and
+what `../yanshuf3` keys all its user-owned rows on. Uppercase it once here and keep that
+form everywhere.
 
 **It only works if the email addresses match.** Before cutover, diff them:
 
 ```sql
--- imported users with no Keycloak account (they will lose access)
-select email from app_users where oidc_sub is null;
+-- imported users not yet bound to a Keycloak identity
+select email from app_users where upn is null;
 ```
 
 Compare that against the realm's user list. For every mismatch, decide explicitly:
@@ -204,8 +224,8 @@ select count(*) from sound_assets where byte_size <= 0;                         
 -- every built-in sound_id still exists in the shared SOUNDS list
 select distinct sound_id from user_sounds where sound_id is not null;
 
--- users who will not be able to sign in
-select count(*) from app_users where oidc_sub is null;   -- expected pre-cutover
+-- users not yet bound to a Keycloak identity
+select count(*) from app_users where upn is null;   -- expected pre-cutover
 
 -- row counts match the export
 select (select count(*) from app_users), (select count(*) from user_sounds),

@@ -21,3 +21,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Supabase migration staging: exported rows + downloaded audio.
+# Never commit these — see .kiro/skills/supabase-to-postgres/references/data-migration.md
+export/
+
+# Secrets fetched from the vault service in development
+local_secrets/

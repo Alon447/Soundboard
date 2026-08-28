@@ -24,8 +24,11 @@ architecture doc sends the next reader down a path that no longer exists.
 
 ## Active constraint: migrating off Supabase to a closed environment
 
-The target environment has **PostgreSQL, S3-compatible object storage and Keycloak**,
-no Supabase, and no outbound internet. This is a live requirement.
+The target environment has **PostgreSQL, S3-compatible object storage, Keycloak and a
+vault service**, no Supabase, and no outbound internet. This is a live requirement.
+
+**`../yanshuf3` already runs on that stack** — same Keycloak, same S3. Its conventions
+are prior art; read `docs/yanshuf3-conventions.md` before designing anything backend.
 
 - **Never persist an absolute URL to a media file in the database.**
   `shared_sounds.file_url` holding a Supabase signed URL is the single biggest reason
@@ -33,6 +36,7 @@ no Supabase, and no outbound internet. This is a live requirement.
 - **Do not treat RLS as the only authorization.** The client sends `user_id` in
   inserts and deletes with no user filter. Only `auth.uid()` policies make that safe,
   and they will not exist. A valid token proves identity, not permission.
+- **Secrets come from the vault service, not `.env`.**
 - **Do not add new Supabase-specific dependencies** (Storage, realtime, edge
   functions, `auth.*` schema references) without flagging the portability cost.
 - **Do not add anything that needs the public internet at runtime or build time.**
@@ -40,7 +44,8 @@ no Supabase, and no outbound internet. This is a live requirement.
 ## Where the detail lives
 
 - `docs/architecture.md` — how the app works today
-- `docs/target-architecture.md` — the decided target: Node API, S3, Keycloak, layout
+- `docs/target-architecture.md` — the decided target: Node API, S3, Keycloak BFF, layout
+- `docs/yanshuf3-conventions.md` — the sibling project to copy from, and what not to copy
 - `docs/backend-portability.md` — why Supabase does not port; rejected options
 - `docs/supabase-surface-inventory.md` — every Supabase call site, as a checklist
 - Skills: `supabase-to-postgres`, `airgap-readiness`, `docs-sync`

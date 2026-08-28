@@ -30,31 +30,44 @@ create extension if not exists citext;    -- case-insensitive email uniqueness
 -- ---------------------------------------------------------------------------
 -- Identity — a local mirror of Keycloak, NOT the source of truth
 --
--- Why a mirror instead of using the Keycloak `sub` directly as a foreign key:
--- every existing user_sounds.user_id and shared_sounds.owner_id holds a SUPABASE
--- user UUID. Keycloak issues a different UUID. Referencing `sub` would orphan
--- every board in the database.
+-- The identifying claim in this realm is `upn` (an employee number such as
+-- T1001001), not `sub`. That is what ../yanshuf3 keys every user-owned row on,
+-- it is the organisation's stable cross-app person identifier, and it is what
+-- makes a Soundboard user recognisably the same person as a yanshuf3 user.
+--
+-- Why a mirror table instead of using `upn` directly as a foreign key the way
+-- yanshuf3 does: every existing user_sounds.user_id and shared_sounds.owner_id
+-- holds a SUPABASE user UUID. Referencing the claim directly would orphan every
+-- board in the database. yanshuf3 gets away with it only because that org
+-- already had employee-number-keyed tables.
 --
 -- So: keep the original Supabase UUIDs as app_users.id on import, and attach
--- oidc_sub on the user's first Keycloak login. Resolution order per request:
---   1. select by oidc_sub                     -> normal path
---   2. else select by email, then set oidc_sub -> reconnects an imported user
---   3. else insert a new row                   -> genuinely new user
+-- `upn` on the user's first Keycloak login. Resolution order per request:
+--   1. select by upn                       -> normal path
+--   2. else select by email, then set upn  -> reconnects an imported user
+--   3. else insert a new row               -> genuinely new user
 --
 -- Step 2 trusts the token's email claim, which is only acceptable because
 -- Keycloak is the authoritative corporate directory. Require email_verified.
+--
+-- Normalise upn to uppercase ONCE, at the boundary, and never re-normalise.
+-- yanshuf3 is inconsistent about this and it causes recurring confusion.
 -- ---------------------------------------------------------------------------
 
 create table app_users (
   id           uuid primary key default gen_random_uuid(),
-  -- Keycloak `sub`. Null until first login (imported rows start null).
-  oidc_sub     text unique,
+  -- Keycloak `upn`, uppercased. Null until first login (imported rows start null).
+  upn          text unique,
   email        citext      not null unique,
   display_name text,
   is_active    boolean     not null default true,
   created_at   timestamptz not null default now(),
   last_seen_at timestamptz
 );
+
+-- Resolution query for step 1, run on every authenticated request. Cache the
+-- result (yanshuf3 uses Redis with a 30 minute TTL) rather than paying it per call.
+-- select id, email, display_name from app_users where upn = $1;
 
 -- ---------------------------------------------------------------------------
 -- Audio assets — metadata only. The bytes live in S3.
@@ -210,7 +223,12 @@ create index user_sounds_user_position_idx on user_sounds (user_id, position);
 --     be layered on — but it needs a per-transaction
 --     `set local request.jwt.claim.sub` and a locally defined auth.uid().
 --     See docs/backend-portability.md for that variant.
---   * password_hash / app_sessions. Keycloak owns credentials and sessions.
+--   * password_hash / app_sessions. Keycloak owns credentials, and the session
+--     lives in the httpOnly cookies set by the auth BFF. See
+--     docs/target-architecture.md.
+--   * Keycloak role columns. yanshuf3 uses realm/client roles for two coarse
+--     gates only and computes everything finer in the database; Soundboard needs
+--     no roles at all, just an ownership check per mutation.
 --   * Any Supabase construct: auth.users, auth.uid(), storage.buckets,
 --     storage.objects, storage.foldername().
 -- ---------------------------------------------------------------------------
