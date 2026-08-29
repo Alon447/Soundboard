@@ -117,8 +117,7 @@ Per request, a single middleware mounted once at the API router root:
 1. read the session cookie
 2. verify it — `jose` + `createRemoteJWKSet`, checking `iss`, `aud` and `exp` with a small
    `clockTolerance`
-3. resolve `upn` to a local `app_users` row, cached
-4. attach it as `req.user`
+3. uppercase `upn` and attach it as `req.user.id`
 
 **Verify on every request, properly.** Both siblings get this wrong and in instructive
 ways. hana2trino calls `jsonwebtoken.decode()`, which validates no signature and never
@@ -132,46 +131,46 @@ skip it.
 `client_secret` in Vault. That is a request to whoever administers the realm, and it is the
 only thing a shared sidecar would have provided for free.
 
-### Identity: key on `upn`, keep a local mirror
+### Identity: `upn` is the ownership key
 
 Keycloak here emits **`upn`** — an employee number like `T1001001` — and that is what
 yanshuf3 keys every user-owned row on. It is the organisation's stable cross-app person
 identifier, and it is what makes a Soundboard user recognisably the same person as a
 yanshuf3 user. `sub` is realm-scoped and less stable; yanshuf3 never reads it.
 
-But Soundboard cannot use `upn` as a foreign key directly the way yanshuf3 does,
-because every existing `user_sounds.user_id` and `shared_sounds.owner_id` holds a
-**Supabase UUID**. So:
+**Decision: `upn` is the ownership key directly. There is no `app_users` table.**
+`user_sounds.user_id` and `shared_sounds.owner_id` are `text` holding the claim, exactly
+as yanshuf3 does it. No mirror table, no per-request resolution query, no join to
+authenticate.
 
-```sql
-create table app_users (
-  id           uuid primary key default gen_random_uuid(),  -- keep Supabase UUIDs on import
-  upn          text unique,          -- Keycloak upn, uppercased. Null until first login.
-  email        citext unique,
-  display_name text,
-  created_at   timestamptz not null default now(),
-  last_seen_at timestamptz
-);
-```
+This supersedes an earlier draft with an `app_users` mirror keyed on `uuid`, whose entire
+purpose was to bridge the Supabase UUIDs already in those columns. The mirror bought two
+things and cost one.
 
-Resolution, per authenticated request:
+What it bought, and what replaces it:
 
-1. Look up by `upn`. Found → done.
-2. Not found → look up by `email` from the token. Found → set `upn` on that row.
-   **This is what reconnects an imported user to their existing board.**
-3. Still not found → insert a new row.
+- **Reconnecting imported users.** The mirror did it lazily, per login, by matching the
+  token's email against the imported row. Without it, the import must rewrite
+  `user_id` from Supabase UUID to `upn` **once, up front**, using the exported
+  `auth.users` emails as the join. Same information, done as a migration step rather than
+  at runtime.
+- **A swappable identity provider.** A stable local id meant changing IdP touched one
+  table. Now it would touch every ownership column. Accepted: this environment has one
+  Keycloak.
 
-Two consequences worth stating plainly. Step 2 trusts the token's email claim, which
-is acceptable only because Keycloak is the authoritative corporate directory — require
-`email_verified`. And `app_users.id` never changes, so every foreign key survives and
-the identity provider stays swappable.
+What it cost was a table, a query on the hot path, and a class of silent failure where a
+user gets a *new* row instead of their existing one and sees a freshly seeded empty board.
 
-**Never use `upn` or `sub` as a foreign key.** All ownership columns reference
-`app_users.id`.
+**The hazard moves rather than disappearing.** If the import maps a UUID to the wrong
+`upn`, or misses one, that board is orphaned just as silently — the user signs in and gets
+9 seeded built-ins. The difference is that it now fails once, during a migration you can
+verify with a query, instead of unpredictably on individual logins. Diff the emails before
+cutover either way.
 
 Normalise `upn` to uppercase **once**, at the boundary, and never re-normalise.
 yanshuf3 is inconsistent here — `upn` uppercased, Redis keys lowercased, one URL
-lowercased — and it is a recurring source of confusion.
+lowercased — and it is a recurring source of confusion. With `upn` now the stored key,
+inconsistent casing means rows that cannot be found rather than merely confusion.
 
 ### Authorization stays ours
 
@@ -207,9 +206,16 @@ What it switches for Soundboard:
 | Concern | Effect when set |
 | --- | --- |
 | identity | mock claims, Keycloak never contacted — the cookie path still runs |
+| data | the Supabase database, over `pg` with TLS — same driver, same SQL, different host |
 | storage | MinIO instead of the internal S3 |
 | secrets | `local_secrets/*.json` instead of Vault |
 | privileges | **nothing** |
+
+**There is no local PostgreSQL.** Development talks to Supabase's database directly with
+`pg`, so the driver, the pool and every query are identical in both environments — the only
+difference is the host in the `db/postgres/<env>` secret. That removes the class of bug
+where PostgREST and `node-postgres` disagree about a type, because PostgREST is out of the
+picture from the first query. `docker-compose.yaml` therefore provides MinIO only.
 
 That last row is a deliberate divergence. In hana2trino the same flag bypasses
 authentication *and* grants `IT: true` (full admin) *and* swaps the Postgres target *and*
@@ -372,7 +378,7 @@ Paths for Soundboard:
 | Path | Contents |
 | --- | --- |
 | `s3` | `S3_DOMAIN`, `S3_ACCESS_ID`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` |
-| `db/postgres/<env>` | host, database, user, password, readPort, writePort |
+| `db/postgres/<env>` | host, database, user, password, writePort |
 | `idp/keycloak/soundboard` | `client_id`, `client_secret` |
 
 ### Cache the derived clients — the one thing to fix while copying
@@ -389,9 +395,9 @@ The middle path, as implemented:
   without a restart and without per-request cost.
 - **Concurrent misses share one in-flight request**, so a burst at startup does not fan out
   into N identical Vault calls.
-- **The derived clients are memoised** — `getStorage()` builds one `S3Client` and reuses it;
-  `resetStorage()` exists for credential rotation. When the `pg.Pool` lands it must work the
-  same way. hana2trino builds *two brand-new pools on every call* and never closes them,
+- **The derived clients are memoised** — `getStorage()` builds one `S3Client` and reuses it,
+  and `getPool()` one `pg.Pool`; `resetStorage()` and `closePool()` exist for rotation and
+  shutdown. hana2trino builds *two brand-new pools on every call* and never closes them,
   which exhausts connections under load. Do not copy that.
 - **Zod-parse at the boundary.** The generic type argument alone is not validated at
   runtime, so a missing field would surface later as a driver error.
@@ -403,7 +409,7 @@ The middle path, as implemented:
 | Path | Contents |
 | --- | --- |
 | `s3` | `S3_DOMAIN`, `S3_ACCESS_ID`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` |
-| `db/postgres/<env>` | host, database, user, password, readPort, writePort |
+| `db/postgres/<env>` | host, database, user, password, writePort |
 | `idp/keycloak/soundboard` | `client_id`, `client_secret` |
 
 Note yanshuf3's equivalent path is misspelled `idp/keycloack/...`; do not copy the typo, and
@@ -475,7 +481,7 @@ soundboard/
 ├── package-lock.json            # single lockfile
 ├── turbo.json
 ├── tsconfig.base.json           # an improvement on yanshuf3, which duplicates configs
-├── docker-compose.yaml          # postgres + minio + vault for local dev
+├── docker-compose.yaml          # minio for local dev; the dev database is Supabase
 ├── frontend/
 │   ├── index.html
 │   ├── frontend/vite.config.ts           # @ -> ./src, /api + /auth proxies, COOP/COEP plugin
@@ -531,12 +537,15 @@ reviewable path.
 
 ### Current state
 
-The workspace split is **done**. `packages/shared` and `db/migrations/` do not exist yet.
+The workspace split is **done**, and so are the schema and the connection pool.
+`packages/shared` does not exist yet.
 
 ```
 soundboard/
 ├── package.json                    # workspace root only: workspaces + orchestration scripts
 ├── package-lock.json               # one lockfile
+├── docker-compose.yaml             # minio only; dev PostgreSQL is Supabase, over pg
+├── db/migrations/                  # 0001_init.sql — the single schema for both environments
 ├── frontend/                       # @soundboard/frontend
 │   ├── package.json
 │   ├── index.html
@@ -560,9 +569,10 @@ soundboard/
 │       └── utils/
 │           ├── secrets.ts          # Vault KV v2 + local-file branch + TTL cache
 │           ├── s3.ts               # memoised v3 client, content-addressed keys
+│           ├── pg.ts               # one memoised Pool, SELECT 1 probe, closePool()
 │           ├── envCheck.ts         # isBlackEnv()
 │           └── logger.ts           # dependency-free structured logging
-├── supabase/migrations/            # current Supabase schema
+├── supabase/migrations/            # current Supabase schema, still live
 └── docs/  .kiro/  .claude/  .github/  scripts/
 ```
 
@@ -574,24 +584,44 @@ Still pending from the target layout: `packages/shared`, for the `SOUNDS` list a
 types. It arrives when the backend needs to seed a board — until then there is nothing to
 share and an empty package would be ceremony.
 
+`db/migrations/0001_init.sql` holds three tables — `sound_assets`, `shared_sounds`,
+`user_sounds` — and is the single schema for both environments. Nothing applies it
+automatically: it has to be run against the Supabase database for development and against
+the closed-environment PostgreSQL for production, which still needs a migration runner.
+
+**Open, and blocking:** the existing Supabase database already has `user_sounds` and
+`shared_sounds` in the old shape (`file_url`, `storage_path`, `gain numeric`, foreign keys
+into `auth.users`). Applying this file there collides. Either it runs in a fresh schema and
+the old tables are migrated across, or the old tables are altered in place into this shape.
+That decision has not been made.
+
 ### Scripts
 
 Everything is driven from the root; nothing needs a `cd`.
 
 | Command | Effect |
 | --- | --- |
+| `docker compose up -d` | MinIO on 9010, plus the bucket. No PostgreSQL — that is Supabase |
 | `npm run dev` | Vite dev server on 3000, proxying `/api` and `/auth` to 3001 |
 | `npm run build` | frontend production build to `frontend/dist` |
 | `npm run lint` | eslint, frontend |
 | `npm run typecheck` / `typecheck:api` / `typecheck:all` | frontend / backend / both |
 | `npm run build:api` | compile the backend to `backend/dist` |
-| `npm run api:check` | connectivity self-check: reads every secret, round-trips an object through S3 |
-| `npm run secrets:example` | create `backend/local_secrets/` from the committed templates |
+| `npm run api:check` | connectivity self-check: every secret, PostgreSQL, and an S3 round trip |
+| `npm run secrets:example` | create `backend/local_secrets/` and `backend/.env` from the committed templates |
 | `npm run docs:sync` / `docs:check` | mirror and verify `.claude/skills` |
 
-`api:check` is the first thing to run in a new environment. It reports field *names* from
-each secret but never values, and its failure output names the likely misconfiguration —
-untrusted CA, expired token, wrong mount, virtual-host-style DNS failure.
+`api:check` is the first thing to run in a new environment. Four checks — the two secrets,
+PostgreSQL, S3 — each reporting one line. It prints secret field *names*, never values, and
+the PostgreSQL leg verifies all three tables exist, which is how you find out
+`db/migrations` never ran.
+
+It deliberately stays a thin diagnostic: it reports the driver's own error rather than
+guessing at causes, because a table of guessed remedies goes stale faster than it helps.
+
+`IS_BLACK_ENV` defaults to **false**, meaning "assume the closed environment", so a missing
+`backend/.env` fails at boot demanding Vault settings rather than silently mocking identity.
+`npm run secrets:example` creates that `.env` from `.env.example`.
 
 ## Dev and production
 
@@ -638,7 +668,8 @@ Recorded so the reasoning is not re-litigated.
 | auth | own users + bcrypt + sessions | Keycloak OIDC, PKCE in the SPA | Keycloak, **server-side code flow in our backend**, httpOnly cookie |
 | token in browser | n/a | access token in memory | **none** — httpOnly cookies |
 | `getBuffer` auth | n/a | thread a bearer token in | **nothing to do**, cookies are automatic |
-| identity key | local `app_users.id` | Keycloak `sub` | **`upn`**, with `app_users.id` still the FK |
+| identity key | local `app_users.id` | Keycloak `sub` | **`upn` stored directly**; no mirror table |
+| dev database | local PostgreSQL | local PostgreSQL | **Supabase, over `pg`** — one driver, two hosts |
 | layout | add `server/` | `apps/web` + `apps/api` | **`frontend/` + `backend/` + `packages/shared`** |
 | login UI | email + password form | sign-in button | **none** — SSO redirect |
 | npm in closed net | "use a mirror" | same | **Nexus**, with `stripLockIntegrity` before `npm ci` |
@@ -668,9 +699,10 @@ body**.
   and retention policy? It holds data the database cannot reconstruct.
 - A Keycloak client for Soundboard, and a vault path for its credentials — or does it
   reuse yanshuf3's client?
-- Do Keycloak `upn`/email values line up with the current Supabase accounts? This
-  decides whether existing boards reconnect on first login. Diff them before cutover.
-- Is `email_verified` reliable in that realm? Step 2 of the identity resolution depends
-  on it.
+- Do Keycloak `upn`/email values line up with the current Supabase accounts? With `upn`
+  stored directly, this decides whether the **import** can rewrite every `user_id`, so it
+  is now a migration blocker rather than a first-login risk. Diff them before cutover.
+- Does `0001_init.sql` run in a fresh schema on Supabase, or are the existing
+  `user_sounds` / `shared_sounds` tables altered in place? They collide as written.
 - PostgreSQL major version, and whether `CREATE EXTENSION` is permitted.
 - Internal CA certificate location, for PostgreSQL, S3 and Keycloak.

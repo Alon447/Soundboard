@@ -49,7 +49,7 @@ providing": auth, data access, and file serving.**
 
 | Supabase piece | Used for | Replacement |
 | --- | --- | --- |
-| GoTrue (`auth.*`) | email/password signup, login, session, `auth.users` table | **Keycloak**, code flow in our own backend, plus a local `app_users` mirror |
+| GoTrue (`auth.*`) | email/password signup, login, session, `auth.users` table | **Keycloak**, code flow in our own backend; the `upn` claim stored directly, no users table |
 | PostgREST (`from(...)`) | 11 query shapes over 2 tables | own Node API (or self-hosted PostgREST) |
 | Storage (`storage.*`) | upload + long-lived signed URL for audio bytes | **S3 bucket**, object key stored in PostgreSQL |
 | RLS + `auth.uid()` | the *only* thing stopping cross-user reads/writes | ownership checks in the API layer (mandatory, see below) |
@@ -296,10 +296,12 @@ easiest thing to get wrong in this migration.
    `file_url` are the only handle you have on the uploaded audio. Once the closed
    environment is cut over, they are gone. Run the export while Supabase is still
    reachable.
-6. **The Keycloak identity claim is not the Supabase user id.** Using `upn` (or `sub`)
-   directly as a foreign key orphans every existing board. The `app_users` mirror table
-   and the resolve-by-`upn`-then-`email` sequence in
-   [`target-architecture.md`](./target-architecture.md) exist entirely to prevent this.
+6. **The Keycloak identity claim is not the Supabase user id.** `upn` is now stored
+   directly in `user_sounds.user_id` and `shared_sounds.owner_id`, so the **import** has to
+   rewrite every existing Supabase UUID to its matching `upn`. That rewrite is the only
+   thing standing between an imported user and a silently orphaned board; there is no
+   runtime fallback to repair a miss. See
+   [`target-architecture.md`](./target-architecture.md).
    It is the single most destructive mistake available in this migration, and it fails
    silently — the user signs in and gets a freshly seeded empty board.
 7. **Playback fetches audio with no auth header.** `getBuffer` in `App.tsx` calls bare
@@ -319,9 +321,10 @@ easiest thing to get wrong in this migration.
     Rotate it and drop both vars when the migration lands.
 12. **`gen_random_uuid()` needs PG 13+**, or `pgcrypto` on older versions. Confirm
     the target server version before assuming defaults work.
-13. **TLS and internal CAs.** Node → PostgreSQL may need
-    `ssl: { ca: readFileSync(...) }`; Node → S3 and Node → Keycloak may need
-    `NODE_EXTRA_CA_CERTS`. Do not disable verification to get past this.
+13. **TLS and internal CAs.** Node → PostgreSQL uses `ssl: { rejectUnauthorized: false }`
+    by decision, so no CA file is needed there — but a non-TLS PostgreSQL will not work at
+    all. Node → S3 and Node → Keycloak use `NODE_EXTRA_CA_CERTS`; do not disable
+    verification for those.
 
 Supabase's bcrypt password hashes in `auth.users.encrypted_password` used to matter,
 back when the plan was local passwords. With Keycloak they are irrelevant — export
@@ -369,11 +372,14 @@ backend needs the `SOUNDS` list to seed a board. The move rewrote 91 `src/` refe
 across `docs/`, the skills, steering and instruction files, plus every `fileMatchPattern`
 and `applyTo` glob — exactly the breakage the `docs-sync` skill flagged in advance.
 
-**Phase 2 — stand up the new backend.**
-New migration set with no `auth.` or `storage.` references, the Node API, the secrets
-module, the S3 client, the OIDC routes and per-request token verification. Build
+**Phase 2 — stand up the new backend.** *In progress.* The secrets module, the S3 client,
+the migration set (`db/migrations/0001_init.sql`, no `auth.` or `storage.` references) and
+the connection pool (`backend/src/utils/pg.ts`) are done. `docker-compose.yaml` provides
+MinIO only — development points `pg` at the Supabase database, so there is one driver and
+one dialect across both environments. Remaining: the Node API, the OIDC routes and
+per-request token verification. Build
 `IS_BLACK_ENV` mock mode first so the whole thing is developable with no Keycloak and no
-Vault reachable. Import the Phase 0 data, mapping users through the `app_users` mirror.
+Vault reachable. Import the Phase 0 data, rewriting every Supabase UUID to its `upn`.
 Then test against the real closed-environment PostgreSQL, S3, Vault and Keycloak, not local
 substitutes — versions, path-style quirks, privilege levels and realm configuration are
 what will bite.

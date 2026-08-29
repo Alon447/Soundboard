@@ -38,12 +38,15 @@ The `backend/` workspace exists with the infrastructure layers done:
   branch for `IS_BLACK_ENV`, TTL cache, `SECRET_PATHS`, `invalidateSecret`
 - `backend/src/utils/s3.ts` — `getStorage()` memoised client, `buildObjectKey`, `sha256Hex`,
   put/get/head/delete
+- `backend/src/utils/pg.ts` — `getPool()` one memoised `Pool` on the write port, `SELECT 1`
+  probe, `closePool()`
 - `backend/src/utils/envCheck.ts`, `backend/src/utils/logger.ts`
 - `backend/src/checkConnectivity.ts` — `npm run api:check`
+- `db/migrations/0001_init.sql` (three tables) and `docker-compose.yaml` (MinIO only —
+  the dev database is Supabase, reached over `pg` with TLS)
 
-**Do not add a second way to read secrets or build an S3 client.** Still to come: the
-`pg.Pool` (one pool, memoised, `SELECT 1` at startup), `db/migrations/`, the OIDC routes and
-the HTTP layer.
+**Do not add a second way to read secrets, build an S3 client, or open a database pool.**
+Still to come: the OIDC routes, the HTTP layer and `packages/shared`.
 
 Backend conventions already set by that code: ESM with `.js` extensions on relative imports
 (NodeNext), Zod at every boundary, object-first logging, never log a secret value, and no
@@ -52,11 +55,11 @@ fallback values for things the architecture guarantees.
 ## Rules
 
 1. **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
-   (an employee number — `sub` is never read in this environment), and it differs from
-   the Supabase user id already stored in `user_sounds.user_id` and
-   `shared_sounds.owner_id`. Ownership columns reference `app_users.id`; `upn` is a
-   separate column resolved per request (by `upn`, falling back to `email` and attaching
-   the `upn`). Getting this wrong orphans every existing board, and fails **silently** —
+   (an employee number — `sub` is never read in this environment). It is stored
+   **directly** in `user_sounds.user_id` and `shared_sounds.owner_id` as `text`; there is
+   no users table and no per-request resolution query. Existing rows hold Supabase UUIDs,
+   so the data import has to rewrite every one of them via the exported `auth.users`
+   emails. Getting that wrong orphans a board, and fails **silently** —
    the user signs in and sees a freshly seeded empty board.
 2. **No absolute URLs to media in the database.** `shared_sounds.file_url` stores a
    10-year Supabase signed URL, which is exactly why the existing data is unportable.

@@ -90,7 +90,7 @@ Bucket `sounds` is created `public = false`. Size cap is
 
 | Construct | Where | Replacement |
 | --- | --- | --- |
-| `references auth.users(id)` | both tables | own `app_users`, a Keycloak identity mirror |
+| `references auth.users(id)` | both tables | dropped; ownership columns become `text` holding the Keycloak `upn` |
 | `auth.uid()` | 5 RLS policies | API-layer ownership checks from the validated token |
 | `enable row level security` | both tables | keep only if connecting as a non-superuser role |
 | `insert into storage.buckets` | 1st migration | drop; S3 bucket, key in `sound_assets` |
@@ -124,8 +124,13 @@ primary keys** — notably none on `user_sounds.user_id`.
 
 PostgREST returns `numeric` as a JSON number. `node-postgres` returns it as a
 **string**. `gain` is `numeric`, so it becomes `"1"` and quietly breaks arithmetic
-and comparisons. Either change the column to `double precision` or call
-`pg.types.setTypeParser(1700, parseFloat)`. `integer` (`position`) is fine.
+and comparisons. `db/migrations/0001_init.sql` uses `double precision` instead, which
+avoids it; the alternative is `pg.types.setTypeParser(1700, parseFloat)`. `integer`
+(`position`) is fine.
+
+`bigint` has the same problem and is not yet handled: `sound_assets.byte_size` will come
+back as a string, and the audio route sets `Content-Length` from it. Either coerce at the
+call site or register `setTypeParser(20, Number)` when that route is built.
 
 ## Unrelated to Supabase but blocks a closed environment
 

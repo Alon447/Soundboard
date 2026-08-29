@@ -85,12 +85,12 @@ identity, not permission.** Authentication and authorization are separate, and
 conflating them is the easiest way to build a system where any user can delete
 anyone's board.
 
-**Never use the Keycloak identity claim as a foreign key.** The claim here is `upn` (an
+**`upn` is the ownership key, stored directly. There is no `app_users` table.**
+`user_sounds.user_id` and `shared_sounds.owner_id` are `text` holding the claim (an
 employee number, what yanshuf3 keys everything on — `sub` is never read in this
-environment), and it differs from the Supabase user id already in
-`user_sounds.user_id`. Ownership columns reference `app_users.id`; `app_users` carries
-`upn` as a separate resolvable column. The resolve-by-`upn`-then-`email` sequence in
-`docs/target-architecture.md` is what reconnects imported users to their existing
+environment), uppercased once at the boundary. Existing rows hold Supabase UUIDs, so the
+**import** rewrites them to the matching `upn` using the exported `auth.users` emails.
+That one-time rewrite is what reconnects imported users to their existing
 boards. Getting this wrong orphans every board — and fails silently, because the user
 just sees a freshly seeded empty board.
 
@@ -143,12 +143,17 @@ these — extend them:
 | `backend/src/config/index.ts` | Zod-validated env; exits at boot listing every problem |
 | `backend/src/utils/secrets.ts` | `getSecret(name, schema?)` over Vault KV v2, local-file branch for `IS_BLACK_ENV`, TTL cache, `SECRET_PATHS`, `invalidateSecret` |
 | `backend/src/utils/s3.ts` | `getStorage()` memoised client, `buildObjectKey`, `sha256Hex`, put/get/head/delete |
+| `backend/src/utils/pg.ts` | `getPool()` one memoised `Pool` on the write port, `SELECT 1` probe, `closePool()` |
 | `backend/src/utils/envCheck.ts` | `isBlackEnv()` |
 | `backend/src/utils/logger.ts` | object-first structured logging, no dependencies |
-| `backend/src/checkConnectivity.ts` | `npm run api:check` — reads every secret, round-trips an object through S3 |
+| `backend/src/checkConnectivity.ts` | `npm run api:check` — every secret, PostgreSQL + table check, S3 round trip |
+| `db/migrations/0001_init.sql` | the three tables, from `references/target-schema.sql` |
+| `docker-compose.yaml` | MinIO only. Dev PostgreSQL **is** Supabase, over `pg` with TLS unverified |
 
-Still to come: the `pg.Pool` (one pool, memoised, `SELECT 1` at startup — not hana2trino's
-pool-per-call), the migrations in `db/migrations/`, the OIDC routes, and the HTTP layer.
+Still to come: the OIDC routes, the HTTP layer, and `packages/shared`.
+
+`getPool()` uses `writePort` only — every route reads its own writes. yanshuf3's read/write
+split is worth copying if read routing ever appears, not before.
 
 ## Order of work
 
@@ -167,7 +172,8 @@ Each phase builds and typechecks on its own. No big-bang cutover.
 3. ~~**Restructure**~~ — **done.** `frontend/` and `backend/` are npm workspaces; the root
    `package.json` is orchestration only. `packages/shared` is deferred until the backend
    needs the `SOUNDS` list.
-4. **Backend** — migrations from `references/target-schema.sql`, the API from
+4. **Backend** — ~~migrations~~ and ~~the pool~~ **done** (`db/migrations/0001_init.sql`,
+   `backend/src/utils/pg.ts`). Remaining: the API from
    `references/api-contract.md`, the secrets module, the S3 client, the OIDC routes and
    per-request verification. **Build `IS_BLACK_ENV` mock mode first**, so the whole thing is
    developable with neither Keycloak nor Vault reachable. Import the captured data. Then
@@ -196,7 +202,7 @@ Changing them turns a contained port into a rewrite.
   removeSound, moveSound, updateGain, refetch }
 ```
 
-`GET /api/me` populates `user`: `app_users.id` → `id`, `email` → `email`, display name
+`GET /api/me` populates `user`: the uppercased `upn` → `id`, `email` → `email`, display name
 → `user_metadata.name`. Do that and `App.tsx`, `useUserSounds` and `useSharedSounds`
 need no changes at all. Note `user.id` is the **local** id, not the Keycloak claim.
 
@@ -243,7 +249,8 @@ Ask rather than assume:
   reuse yanshuf3's client?
 - Do Keycloak `upn`/email values match the current Supabase accounts? This decides
   whether existing boards reconnect. Diff before cutover.
-- Is `email_verified` trustworthy in that realm? Step 2 of identity resolution needs it.
+- Does `0001_init.sql` run in a fresh schema on Supabase, or are the existing
+  `user_sounds` / `shared_sounds` tables altered in place? They collide as written.
 - PostgreSQL major version; `CREATE EXTENSION` / `CREATE SCHEMA` permitted?
 - Internal CA certificate location, for PostgreSQL, S3 and Keycloak.
 - Realistic user count, upload count, max clip size.
@@ -260,8 +267,8 @@ change gain, then sign in as a second user and confirm you cannot see or delete 
 first user's pads.
 
 For an imported user specifically: confirm their pre-migration board appears. If it does
-not, the identity mapping is wrong — check `app_users.upn` was attached to the existing
-row rather than a new row being created.
+not, the import's UUID → `upn` rewrite missed them — check `select distinct user_id from
+user_sounds` for anything still shaped like a UUID.
 
 Also verify the failure modes, which are where this design differs from the old one: make
 Keycloak unreachable and confirm the app shows a retry rather than a redirect loop, and

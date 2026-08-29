@@ -1,8 +1,7 @@
 {
-  "host": "localhost",
-  "database": "soundboard",
-  "user": "soundboard",
-  "password": "soundboard",
-  "readPort": 5432,
+  "host": "db.your-project-ref.supabase.co",
+  "database": "postgres",
+  "user": "postgres",
+  "password": "your-supabase-database-password",
   "writePort": 5432
 }

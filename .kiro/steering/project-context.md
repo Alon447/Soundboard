@@ -15,12 +15,15 @@ Validate app changes with `npm run build` and `npm run typecheck`.
 
 Every line has to earn its place. Prefer deleting to adding.
 
-**Comments.** No comment that restates the code. No section-divider banners, no
-docstring on a function whose name and signature already say it. Comment only what the
-code cannot record: a non-obvious constraint, a workaround for external behaviour, or a
-decision a reader would otherwise reverse. One or two lines. Rationale, history and
-rejected alternatives belong in `docs/` — a second copy in source guarantees one of them
-goes stale.
+**Comments.** The test is not "is this true and interesting" — almost everything passes
+that. The test is: **would a competent reader make a wrong change without this line, and
+would the mistake be silent?** If the code fails loudly when they get it wrong, the
+failure is the comment. Expect one or two comments in a file, often zero.
+
+Specifically banned: restating the code, section-divider banners, a docstring on a
+function whose name and signature already say it, and **carrying rationale across from
+`docs/` or a reference file while transcribing**. Design history, alternatives and "why
+not X" stay where they are; a second copy in source guarantees one of them goes stale.
 
 **New code: "nothing calls it yet" is not the test.** This is a migration branch.
 Building Vault, S3, the pool and the auth flow before their consumers exist is the work,
@@ -35,6 +38,9 @@ No abstraction for a single call site, and no file that exists only to re-export
 
 **Existing verbosity is not a precedent.** When editing an over-commented or over-built
 file, trim rather than match it.
+
+**Keep chat replies short.** Lead with the answer. Add background, alternatives and
+caveats only when asked, or when a decision genuinely turns on them.
 
 ## Documentation is part of the change, not a follow-up
 

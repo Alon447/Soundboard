@@ -17,14 +17,15 @@ for in-browser video → MP3 conversion. Backend is currently Supabase
 ## Commands
 
 ```bash
+docker compose up -d    # minio on 9010 + bucket (no postgres: dev uses Supabase over pg)
 npm run dev             # vite dev server (frontend)
 npm run build           # production build (frontend)
 npm run typecheck       # frontend
 npm run typecheck:api   # backend
 npm run typecheck:all   # both
 npm run build:api       # compile backend to backend/dist
-npm run api:check       # backend connectivity self-check: Vault + S3
-npm run secrets:example # create backend/local_secrets/ from the committed templates
+npm run api:check       # backend self-check: secrets + PostgreSQL + S3 round trip
+npm run secrets:example # create backend/local_secrets/ and backend/.env from templates
 npm run lint            # eslint (frontend only for now)
 npm run docs:sync       # mirror .kiro/skills -> .claude/skills
 npm run docs:check      # verify that mirror, exit 1 on drift
@@ -60,7 +61,7 @@ next to it.
 ## Repository shape
 
 An npm workspace with two packages: `frontend/` (`@soundboard/frontend`, the Vite SPA) and
-`backend/` (`@soundboard/backend`, Vault + S3 so far). The root `package.json` is workspace
+`backend/` (`@soundboard/backend`, Vault + S3 + PostgreSQL so far). The root `package.json` is workspace
 orchestration only. `packages/shared` does not exist yet — it arrives when the backend needs
 the `SOUNDS` list to seed a board. See `docs/target-architecture.md`.
 
@@ -98,12 +99,15 @@ guarantees. Never log a secret value — log its path.
 
 Every line has to earn its place. Prefer deleting to adding.
 
-**Comments.** No comment that restates the code. No section-divider banners, no
-docstring on a function whose name and signature already say it. Comment only what the
-code cannot record: a non-obvious constraint, a workaround for external behaviour, or a
-decision a reader would otherwise reverse. One or two lines. Rationale, history and
-rejected alternatives belong in `docs/` — a second copy in source guarantees one of them
-goes stale.
+**Comments.** The test is not "is this true and interesting" — almost everything passes
+that. The test is: **would a competent reader make a wrong change without this line, and
+would the mistake be silent?** If the code fails loudly when they get it wrong, the
+failure is the comment. Expect one or two comments in a file, often zero.
+
+Specifically banned: restating the code, section-divider banners, a docstring on a
+function whose name and signature already say it, and **carrying rationale across from
+`docs/` or a reference file while transcribing**. Design history, alternatives and "why
+not X" stay where they are; a second copy in source guarantees one of them goes stale.
 
 **New code: "nothing calls it yet" is not the test.** This is a migration branch.
 Building Vault, S3, the pool and the auth flow before their consumers exist is the work,
@@ -118,6 +122,9 @@ No abstraction for a single call site, and no file that exists only to re-export
 
 **Existing verbosity is not a precedent.** When editing an over-commented or over-built
 file, trim rather than match it.
+
+**Keep chat replies short.** Lead with the answer. Add background, alternatives and
+caveats only when asked, or when a decision genuinely turns on them.
 
 ## The migration that shapes all backend work
 
@@ -142,11 +149,12 @@ PostgreSQL, the answer is no — explain why before proposing anything.
 
 Six rules, in rough order of how expensive they are to get wrong:
 
-1. **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
-   (an employee number — `sub` is never read in this environment), and it differs from
-   the Supabase user id already in `user_sounds.user_id`. Ownership references
-   `app_users.id`, with `upn` resolved per request. Getting this wrong orphans every
-   board — silently, because the user just sees a freshly seeded empty one.
+1. **`upn` is the ownership key, stored directly — there is no `app_users` table.**
+   `user_sounds.user_id` and `shared_sounds.owner_id` are `text` holding the claim (an
+   employee number; `sub` is never read here), uppercased once at the boundary. Existing
+   rows hold Supabase UUIDs, so the import must rewrite them via the exported
+   `auth.users` emails. Miss one and that board orphans silently — the user just sees a
+   freshly seeded empty one.
 2. **Never persist an absolute URL to a media file.** `shared_sounds.file_url` holding
    a signed URL is why the current data cannot move. Store a reference, derive the URL.
 3. **A valid token proves identity, not permission.** Keycloak does not do

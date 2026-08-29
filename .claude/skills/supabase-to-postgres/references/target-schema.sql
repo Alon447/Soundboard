@@ -2,10 +2,11 @@
 -- Soundboard — target schema for the closed environment
 --   PostgreSQL : relational data
 --   S3         : audio bytes (this schema stores only the object key)
---   Keycloak   : authentication (this schema stores only a local mirror)
+--   Keycloak   : authentication (this schema stores only the upn claim)
 --
 -- Differences from supabase/migrations/*.sql, and why:
---   * auth.users            -> app_users, a local mirror of Keycloak identities
+--   * auth.users            -> nothing. Ownership columns hold the Keycloak `upn`
+--                             claim directly as text; there is no users table.
 --   * no password_hash      -> Keycloak owns credentials
 --   * no session table      -> the session is an httpOnly cookie holding the ID token
 --   * no RLS / auth.uid()   -> ownership enforced in the API layer
@@ -25,49 +26,29 @@
 -- ---------------------------------------------------------------------------
 
 create extension if not exists pgcrypto;  -- gen_random_uuid() on PG < 13
-create extension if not exists citext;    -- case-insensitive email uniqueness
 
 -- ---------------------------------------------------------------------------
--- Identity — a local mirror of Keycloak, NOT the source of truth
+-- Identity — there is no table for it
 --
 -- The identifying claim in this realm is `upn` (an employee number such as
--- T1001001), not `sub`. That is what ../yanshuf3 keys every user-owned row on,
--- it is the organisation's stable cross-app person identifier, and it is what
--- makes a Soundboard user recognisably the same person as a yanshuf3 user.
+-- T1001001), not `sub`. Ownership columns hold it directly as text, exactly as
+-- ../yanshuf3 does. No mirror table, no per-request resolution query.
 --
--- Why a mirror table instead of using `upn` directly as a foreign key the way
--- yanshuf3 does: every existing user_sounds.user_id and shared_sounds.owner_id
--- holds a SUPABASE user UUID. Referencing the claim directly would orphan every
--- board in the database. yanshuf3 gets away with it only because that org
--- already had employee-number-keyed tables.
+-- An earlier draft had an `app_users` mirror keyed on uuid, purely to bridge the
+-- Supabase UUIDs already sitting in user_sounds.user_id and
+-- shared_sounds.owner_id. That bridge is now a one-time import step instead:
+-- rewrite each user_id from its Supabase UUID to the matching upn, joining on
+-- the email in the exported auth.users. Same information, done once and
+-- verifiable with a query, rather than lazily on each first login.
 --
--- So: keep the original Supabase UUIDs as app_users.id on import, and attach
--- `upn` on the user's first Keycloak login. Resolution order per request:
---   1. select by upn                       -> normal path
---   2. else select by email, then set upn  -> reconnects an imported user
---   3. else insert a new row               -> genuinely new user
---
--- Step 2 trusts the token's email claim, which is only acceptable because
--- Keycloak is the authoritative corporate directory. Require email_verified.
+-- The silent-orphan hazard does not disappear, it moves. A UUID mapped to the
+-- wrong upn, or missed, means that user signs in and gets 9 freshly seeded
+-- built-ins while their real board sits unreachable. Diff the emails first.
 --
 -- Normalise upn to uppercase ONCE, at the boundary, and never re-normalise.
--- yanshuf3 is inconsistent about this and it causes recurring confusion.
+-- Now that it is the stored key, inconsistent casing means rows that cannot be
+-- found at all.
 -- ---------------------------------------------------------------------------
-
-create table app_users (
-  id           uuid primary key default gen_random_uuid(),
-  -- Keycloak `upn`, uppercased. Null until first login (imported rows start null).
-  upn          text unique,
-  email        citext      not null unique,
-  display_name text,
-  is_active    boolean     not null default true,
-  created_at   timestamptz not null default now(),
-  last_seen_at timestamptz
-);
-
--- Resolution query for step 1, run on every authenticated request. Cache the
--- result (yanshuf3 uses Redis with a 30 minute TTL) rather than paying it per call.
--- select id, email, display_name from app_users where upn = $1;
 
 -- ---------------------------------------------------------------------------
 -- Audio assets — metadata only. The bytes live in S3.
@@ -106,7 +87,9 @@ create unique index sound_assets_sha256_idx on sound_assets (sha256);
 
 create table shared_sounds (
   id         uuid primary key default gen_random_uuid(),
-  owner_id   uuid  not null references app_users(id)    on delete cascade,
+  -- the Keycloak upn, uppercased. No table to reference, so no cascade either:
+  -- deleting a user's content is an application concern.
+  owner_id   text  not null,
   -- denormalised uploader label, captured at upload time for attribution
   owner_name text  not null default 'Anonymous',
   name       text  not null,
@@ -130,7 +113,7 @@ create index shared_sounds_asset_idx on shared_sounds (asset_id);
 
 create table user_sounds (
   id              uuid not null primary key default gen_random_uuid(),
-  user_id         uuid not null references app_users(id) on delete cascade,
+  user_id         text not null,
   -- built-in id from packages/shared builtinSounds (e.g. 'vine-boom')
   sound_id        text,
   -- set when the pad points at the shared library

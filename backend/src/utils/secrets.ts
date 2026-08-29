@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { ZodType } from 'zod';
+import type { ZodType, ZodTypeDef } from 'zod';
 
 import { config } from '../config/index.js';
 import { isBlackEnv } from './envCheck.js';
@@ -12,7 +12,7 @@ export type Secret = Record<string, string>;
 export const SECRET_PATHS = {
 	/** S3_DOMAIN, S3_ACCESS_ID, S3_SECRET_KEY, S3_BUCKET_NAME */
 	s3: 's3',
-	/** host, database, user, password, readPort, writePort */
+	/** host, database, user, password, writePort */
 	postgresDev: 'db/postgres/dev',
 	postgresProd: 'db/postgres/prod',
 	/** client_id, client_secret */
@@ -39,7 +39,7 @@ const inFlight = new Map<string, Promise<Secret>>();
  */
 export async function getSecret<Fields extends Secret = Secret>(
 	name: string,
-	schema?: ZodType<Fields>,
+	schema?: ZodType<Fields, ZodTypeDef, unknown>,
 ): Promise<Fields> {
 	const cached = cache.get(name);
 	if (cached && cached.expiresAt > Date.now()) {

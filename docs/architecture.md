@@ -105,8 +105,11 @@ No realtime subscriptions, no RPC, no edge functions.
 | --- | --- |
 | `backend/src/utils/secrets.ts` | Vault KV v2 reads, local-file branch, TTL cache |
 | `backend/src/utils/s3.ts` | Memoised S3 client, content-addressed keys, object operations |
+| `backend/src/utils/pg.ts` | One memoised `pg.Pool`, startup probe, `closePool()` |
 | `backend/src/config/index.ts` | Zod-validated env, exits at boot on anything missing |
-| `backend/src/checkConnectivity.ts` | `npm run api:check` — Vault + S3 self-check |
+| `backend/src/checkConnectivity.ts` | `npm run api:check` — four checks: secrets, PostgreSQL, S3 |
+| `db/migrations/0001_init.sql` | Target schema: `sound_assets`, `shared_sounds`, `user_sounds` |
+| `docker-compose.yaml` | MinIO only; the dev database is Supabase, reached over `pg` |
 | `frontend/src/App.tsx` | Layout, keybindings, audio engine, auth guard |
 | `frontend/src/lib/useUserSounds.ts` | Every board read/write; audio path resolution |
 | `frontend/src/lib/useSharedSounds.ts` | Community library query |

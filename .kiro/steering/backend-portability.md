@@ -37,20 +37,21 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    validated token server-side and scope every mutation. **A valid Keycloak token
    proves identity, not permission.**
 
-4. **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
-   (an employee number — `sub` is never read in this environment), and it differs from
-   the Supabase user id already stored in `user_sounds.user_id`. Ownership columns
-   reference `app_users.id`; `upn` is a separate column resolved per request. Getting
-   this wrong orphans every existing board — and fails silently, because the user just
-   sees a freshly seeded empty board.
+4. **`upn` is the ownership key, stored directly. There is no `app_users` table.**
+   `user_sounds.user_id` and `shared_sounds.owner_id` are `text` holding the claim
+   (an employee number — `sub` is never read here), uppercased once at the boundary.
+   The consequence: existing rows hold **Supabase UUIDs**, so the data import has to
+   rewrite them to the matching `upn` using the exported `auth.users` emails. Miss one and
+   that board is orphaned silently — the user just sees a freshly seeded empty board.
+   Do not reintroduce a mirror table; do not add a per-request resolution query.
 
 4a. **Secrets come from Vault — already built.** `backend/src/utils/secrets.ts` provides
    `getSecret(name, schema?)`, `SECRET_PATHS` and `invalidateSecret`; it reads Vault KV v2
    directly, falls back to `backend/local_secrets/` when `IS_BLACK_ENV`, and caches for
    `SECRET_TTL_MS`. Do not rewrite it, do not add a second way to read secrets, and never
    put a credential in `.env` or in source. **Memoise anything derived from a secret** —
-   `backend/src/utils/s3.ts` shows the shape; when the `pg.Pool` lands it must be one pool,
-   not hana2trino's pool-per-call.
+   `backend/src/utils/s3.ts` and `backend/src/utils/pg.ts` show the shape — `getPool()` is
+   one pool for the process, not hana2trino's pool-per-call. Do not open a second pool.
 
 5. **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject`
    first, then the rows in one transaction, so a failure leaves a harmless orphaned

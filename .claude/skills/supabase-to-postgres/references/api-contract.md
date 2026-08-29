@@ -55,19 +55,15 @@ clock, and reads its sidecar's `ok` field without testing it; its per-request mi
 skips validation entirely, so a revoked session keeps working until the cookie expires.
 yanshuf3 omits audience validation and passes no clock tolerance.
 
-Then resolve the local user and attach it to the request:
+Then attach the identity to the request. There is no lookup: `req.user.id` **is** the
+uppercased `upn` claim, because that is what the ownership columns store.
 
-1. `select * from app_users where upn = $1`
-2. else `select * from app_users where email = $1`, and `update … set upn = $2`
-   — **this is what reconnects an imported user to their existing board**
-3. else insert a new row
+The identifying claim is **`upn`**, not `sub`, which yanshuf3 never reads. Uppercase it
+once here and never again — it is the stored key, so inconsistent casing means rows that
+cannot be found.
 
-The identifying claim is **`upn`**, uppercased once at this boundary — not `sub`, which
-yanshuf3 never reads. Require `email_verified` before trusting the email in step 2.
-Cache the resolved user rather than querying per request.
-
-**`req.user.id` is the local `app_users.id`, never the raw claim.** Every ownership
-column references it. Ignore any `user_id` / `owner_id` in a request body.
+**Derive it from the validated token, never from the request body.** Ignore any `user_id`
+or `owner_id` a client sends.
 
 **A valid token is not authorization.** Keycloak says who the caller is; only this API
 knows which pads are theirs. Using Keycloak "only to identify the user, not to block the
@@ -275,9 +271,12 @@ id, which keeps the storage layer private.
 - Use a `pg.Pool`, not a connection per request. yanshuf3 splits read and write pools
   from one vault secret and probes both with `SELECT 1` at startup; copy the probe and
   the graceful `pool.end()` on SIGTERM.
-- `pg` may need `ssl: { ca }` for an internal CA; S3 and Keycloak need
-  `NODE_EXTRA_CA_CERTS`. Do **not** copy yanshuf3's blanket
-  `rejectUnauthorized: false`.
+- **PostgreSQL: `ssl: { rejectUnauthorized: false }`, hardcoded.** A deliberate, scoped
+  exception — TLS is on but the certificate is not verified, which is what lets one
+  connection string work against both Supabase and an internal CA with no config knob.
+  Note this means a *non-TLS* PostgreSQL cannot be used at all; the server must accept SSL.
+- S3 and Keycloak still use `NODE_EXTRA_CA_CERTS`. Do **not** extend the PostgreSQL
+  exception to them, and do not reach for `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 - Pass S3 credentials explicitly and set `forcePathStyle: true` — confirmed required by
   yanshuf3. See the `airgap-readiness` skill for why the default credential chain is a
   hazard here.

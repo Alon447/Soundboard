@@ -81,9 +81,10 @@ check in `UploadSoundPanel` before conversion, and enforce it server-side too.
 
 ## 0. Diagnose with `npm run api:check` first
 
-`backend/src/checkConnectivity.ts` reads every secret and round-trips an object through S3,
-naming the likely misconfiguration on failure. It prints secret field *names* only, never
-values. Run it before debugging anything else in a new environment.
+`backend/src/checkConnectivity.ts` reads both secrets, checks PostgreSQL and its three
+tables, and round-trips an object through S3 — four checks, one line each, reporting the
+driver's own error. It prints secret field *names* only, never values. Run it before
+debugging anything else in a new environment.
 
 Two details in it worth copying into any similar script:
 
@@ -140,8 +141,10 @@ host and Keycloak agree on the time, because clock skew rejects valid tokens via
 - Node does not read the OS trust store on Linux. Set `NODE_EXTRA_CA_CERTS` for the
   API process — it covers both the S3 and Keycloak connections. PostgreSQL needs
   `ssl: { ca }` or `PGSSLROOTCERT` separately.
-- Never use `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0`. The CA is
-  available in a closed network; using it is configuration, not a blocker.
+- Never use `NODE_TLS_REJECT_UNAUTHORIZED=0`, and no `rejectUnauthorized: false` outside
+  `backend/src/utils/pg.ts`, where it is a deliberate scoped exception (TLS on, certificate
+  unverified) so one secret works against both Supabase and an internal CA. The CA is
+  available in a closed network; using it elsewhere is configuration, not a blocker.
 - `npm ci` needs a reachable registry: build outside the closed network, or use an
   internal mirror. Keep `package-lock.json` committed and current.
 - Check any new dependency for install-time network access before adding it. Nothing

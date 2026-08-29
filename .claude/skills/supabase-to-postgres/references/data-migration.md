@@ -138,21 +138,22 @@ Do not trust that a `PutObject` without an exception means the bytes are intact.
 
 Order matters, because of the foreign keys:
 
-1. **`app_users`** — from `export/users.json`. Map `id` → `id` (**keep the original
-   Supabase UUIDs**; every `user_sounds.user_id` and `shared_sounds.owner_id`
-   references them), `email` → `email`, `raw_user_meta_data->>'name'` →
-   `display_name`. Leave `upn` **null** — it gets attached on first Keycloak login.
+1. **Build a UUID → `upn` map** from `export/users.json` and the Keycloak realm, joining
+   on email. There is no `app_users` table to load; this map is what every subsequent
+   step rewrites ownership columns through. Resolve every unmatched email *before*
+   loading anything — an unmapped user is an orphaned board.
 2. **`sound_assets`** — one row per deduplicated manifest entry: `bucket`,
    `object_key`, `content_type`, `byte_size`, `sha256` (as `bytea`, from the hex).
-3. **`shared_sounds`** — original `id`, `owner_id`, `owner_name`, `name`, `icon`,
-   `color`, `gain`, `is_public`, `created_at`; `asset_id` resolved through the
-   manifest. Drop `file_url` and `storage_path`.
-4. **`user_sounds`** — original `id`, `user_id`, `sound_id`, `shared_sound_id`,
-   `name`, `color`, `icon`, `gain`, `position`, `created_at`. Drop
-   `custom_file_url` (see step 6 first).
+3. **`shared_sounds`** — original `id`, `owner_name`, `name`, `icon`, `color`, `gain`,
+   `is_public`, `created_at`; `asset_id` resolved through the manifest; **`owner_id`
+   rewritten from the Supabase UUID to the `upn`** via the step 1 map. Drop `file_url`
+   and `storage_path`.
+4. **`user_sounds`** — original `id`, `sound_id`, `shared_sound_id`, `name`, `color`,
+   `icon`, `gain`, `position`, `created_at`; **`user_id` rewritten to the `upn`** the same
+   way. Drop `custom_file_url` (see step 6 first).
 
-Preserving the original UUIDs throughout makes the whole import idempotent and
-re-runnable.
+Preserving the original row `id`s makes the import idempotent and re-runnable. The
+ownership columns are the only values that change, and they change exactly once.
 
 ## 5. Identity: connecting Supabase users to Keycloak accounts
 
@@ -160,35 +161,37 @@ This is the step that decides whether people's boards survive, and it is easy to
 wrong because nothing fails loudly — users simply sign in and see an empty board that
 gets seeded with the 9 built-ins, silently orphaning their old pads.
 
-The mechanism is the resolve sequence in the API: look up `upn`, fall back to `email`,
-and attach the `upn` to the matched row. Imported rows start with `upn = null`, so the
-first Keycloak login of each user takes the email branch and binds the two identities.
+Because `upn` is stored directly, there is no runtime resolution to fall back on. The
+binding happens **once, here**, when you rewrite every `owner_id` and `user_id`. Get it
+wrong and no later login repairs it.
 
 `upn` is the identifying claim in this realm — an employee number like `T1001001`, and
-what `../yanshuf3` keys all its user-owned rows on. Uppercase it once here and keep that
-form everywhere.
+what `../yanshuf3` keys all its user-owned rows on. Uppercase it once when building the
+map and keep that form everywhere.
 
-**It only works if the email addresses match.** Before cutover, diff them:
+**It only works if the email addresses match.** Diff them before you load anything, from
+the export rather than the database:
 
-```sql
--- imported users not yet bound to a Keycloak identity
-select email from app_users where upn is null;
+```
+# every distinct owner in the export, and whether the map resolved it
+node scripts/check-identity-map.mjs export/users.json export/keycloak-users.json
 ```
 
-Compare that against the realm's user list. For every mismatch, decide explicitly:
-correct the `app_users.email` to the Keycloak one, ask for a Keycloak account to be
-created, or accept that the board is abandoned. Do not leave it to chance.
+For every unmatched email, decide explicitly: correct the address in the map, ask for a
+Keycloak account to be created, or accept that the board is abandoned. Do not leave it to
+chance, and do not load a partial map — an unmapped `user_id` is an orphan with no second
+chance.
 
-After cutover, the same query is a progress report — rows still `null` are users who
-have not signed in yet.
+After the load, `select distinct user_id from user_sounds` should contain only `upn`
+values. Any remaining UUID is a row the map missed.
 
 Two failure modes to watch:
 
-- **Case or domain differences** (`A.User@corp.com` vs `auser@corp.example`). `citext`
-  handles case; domains need a mapping decision.
-- **Two `app_users` rows with the same person's email**, which the unique constraint
-  prevents on insert but which can happen if you import twice with different ids.
-  Import once, idempotently, keyed on the original id.
+- **Case or domain differences** (`A.User@corp.com` vs `auser@corp.example`). Normalise
+  case when building the map; domains need a mapping decision.
+- **Two Supabase accounts for one person**, which used to collide on a unique email
+  constraint and now silently merge into one `upn` — both their boards end up on one
+  account. Check for duplicate emails in the export first.
 
 ## 6. Handle the legacy `custom_file_url` rows
 
@@ -224,12 +227,15 @@ select count(*) from sound_assets where byte_size <= 0;                         
 -- every built-in sound_id still exists in the shared SOUNDS list
 select distinct sound_id from user_sounds where sound_id is not null;
 
--- users not yet bound to a Keycloak identity
-select count(*) from app_users where upn is null;   -- expected pre-cutover
+-- no ownership column still holds a Supabase UUID: every one should be a upn
+select count(*) from user_sounds
+ where user_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-';                                     -- 0
+select count(*) from shared_sounds
+ where owner_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-';                                    -- 0
 
 -- row counts match the export
-select (select count(*) from app_users), (select count(*) from user_sounds),
-       (select count(*) from shared_sounds), (select count(*) from sound_assets);
+select (select count(*) from user_sounds), (select count(*) from shared_sounds),
+       (select count(*) from sound_assets);
 ```
 
 Then, in the browser: sign in as an imported user, confirm their pre-migration board
@@ -241,7 +247,8 @@ and freshly seeded means the identity mapping did not bind.
 
 Only after the new environment is verified working:
 
-- Remove `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from `.env`.
+- Remove `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` from `frontend/.env`, and point
+  `backend/local_secrets/db/postgres/dev` at something other than Supabase.
 - Rotate the anon key regardless — it is committed in this repo's history.
 - Never commit the service-role key, and clear it from your shell history after the
   export.

@@ -213,9 +213,16 @@ Closed environments usually run an internal CA, and there are now four TLS hops.
   **not** read the OS trust store on Linux. Set `NODE_EXTRA_CA_CERTS=/path/ca.crt`
   for the backend process — one variable covers all three.
 
-Never reach for `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0`. In
-a closed network the CA is available; using it is a configuration task, not a
-blocker. Disabling verification turns a solved problem into a permanent one.
+**One scoped exception: PostgreSQL.** `backend/src/utils/pg.ts` sets
+`ssl: { rejectUnauthorized: false }` unconditionally, by explicit decision — TLS on,
+certificate unverified — so that one connection secret works against both Supabase and an
+internal CA without a config knob. The consequence is that a PostgreSQL with SSL *disabled*
+cannot be used at all.
+
+Everywhere else, never reach for `rejectUnauthorized: false`, and never for
+`NODE_TLS_REJECT_UNAUTHORIZED=0`, which would silently extend the exception to S3, Vault and
+Keycloak. In a closed network the CA is available; using it is a configuration task, not a
+blocker.
 
 ## 10. Build and install in a closed network
 
@@ -248,10 +255,14 @@ Also:
 
 ## 11. Diagnose with `npm run api:check`, and beware vanishing error output
 
-`backend/src/checkConnectivity.ts` is the first thing to run in a new environment. It reads
-every secret, round-trips a small object through S3, and reports the likely
-misconfiguration on failure. It prints secret *field names* only, never values, so it is
-safe to run against production.
+`backend/src/checkConnectivity.ts` is the first thing to run in a new environment. Four
+checks — the two secrets, PostgreSQL plus its three tables, and an S3 round trip — each
+reporting one line with the driver's own error. It prints secret *field names* only, never
+values, so it is safe to run against production.
+
+It stays deliberately thin. An earlier version carried a table of likely causes per failure
+mode; that was dropped because guessed remedies go stale faster than they help, and the
+underlying errors already name the host, port and database.
 
 Two hard-won details in it, both worth copying into anything similar:
 
@@ -259,8 +270,8 @@ Two hard-won details in it, both worth copying into anything similar:
 every address family is refused — the normal case for `localhost` with IPv4 and IPv6 — the
 useful information is in `error.errors[]`, one entry per address, and `error.message` is the
 empty string. A diagnostic that prints `error.message` prints *nothing at all* for the most
-common failure there is. Walk `errors[]` and the `cause` chain, and fall back to
-`error.name`.
+common failure there is. Falling back to `errors[0].message`, then `error.name`, is enough —
+three lines, no cause-chain walking.
 
 **Build the report as one string and write it with a single `process.stdout.write`.** During
 development, `console.log`/`console.error` calls placed after a failed AWS SDK call produced
@@ -392,7 +403,8 @@ TLS and build:
 - [ ] HTTPS with a cert the environment trusts, for both the app and Keycloak
 - [ ] PostgreSQL connection works with the internal CA
 - [ ] `NODE_EXTRA_CA_CERTS` set for the API process
-- [ ] no `rejectUnauthorized: false` or `NODE_TLS_REJECT_UNAUTHORIZED=0` anywhere
+- [ ] no `NODE_TLS_REJECT_UNAUTHORIZED=0`, and no `rejectUnauthorized: false` outside
+      `pg.ts`, where it is the documented exception
 - [ ] `stripLockIntegrity` runs before `npm ci` in the Dockerfile
 - [ ] `checkNexusPackages` reports nothing missing from the mirror
 - [ ] `npm ci && npm run build && npm run typecheck` from a clean checkout

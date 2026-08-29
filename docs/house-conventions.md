@@ -355,8 +355,11 @@ in CI — yanshuf3's `scripts/sync-ai-instructions.mjs`. Soundboard's
 - **A new `pg.Pool` per call, never closed** (hana2trino `pg.ts`) — one pool, created once,
   with an error handler and a startup probe.
 - **A secrets service as a separate process** (yanshuf3) — read Vault directly.
-- **`rejectUnauthorized: false`** (both, repo-wide in yanshuf3) — use
-  `NODE_EXTRA_CA_CERTS`. The CA is available; using it is configuration, not a blocker.
+- **`rejectUnauthorized: false` *repo-wide*** (both, everywhere in yanshuf3) — use
+  `NODE_EXTRA_CA_CERTS` for S3, Vault and Keycloak. The CA is available; using it is
+  configuration, not a blocker. Soundboard's one exception is the PostgreSQL connection,
+  which sets it deliberately so a single secret works against Supabase and the internal
+  store alike.
 - **`jsonwebtoken.decode()` as validation** (hana2trino) — verify with `jose` + JWKS.
 - **Unchecked `ok` field** (hana2trino).
 - **Re-validating only once per session** (hana2trino) — check on every request, cached.
@@ -387,11 +390,12 @@ key against pre-existing tables (`auth_user`, `user_details_full`, `special_auth
 Take the claim choice: `upn` is the organisation's stable cross-app person identifier, so
 a Soundboard user is recognisably the same person as a yanshuf3 user.
 
-Do **not** take the "no local table" part. It works there only because those tables were
-already keyed by employee number. Soundboard has existing rows keyed by *Supabase UUIDs*,
-so it needs an `app_users` mirror to bridge them — `app_users.id` stays the foreign key,
-`upn` is a separate resolvable column. See
-[`target-architecture.md`](./target-architecture.md).
+Soundboard now takes the "no local table" part too: `upn` is stored directly in the
+ownership columns. The difference is that yanshuf3's tables were keyed by employee number
+from the start, while Soundboard's existing rows hold *Supabase UUIDs*, so the data import
+has to rewrite them once. An earlier draft used an `app_users` mirror to bridge that gap
+lazily at login instead; it was dropped as a table and a hot-path query for something a
+migration step does once. See [`target-architecture.md`](./target-architecture.md).
 
 Both projects also confirm the authorization split Soundboard needs: **the token proves
 identity, Postgres decides permission.** yanshuf3 uses Keycloak roles for two coarse

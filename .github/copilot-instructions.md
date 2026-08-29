@@ -37,10 +37,11 @@ An npm workspace with two packages: `frontend/` (`@soundboard/frontend`, the Vit
 orchestration only. `packages/shared` does not exist yet. All scripts run from the root.
 
 ```bash
+docker compose up -d    # minio on 9010 + bucket (no postgres: dev uses Supabase over pg)
 npm run dev             # Vite on 3000, proxying /api and /auth to the backend on 3001
 npm run typecheck:all   # frontend + backend
-npm run api:check       # backend connectivity self-check: Vault + S3
-npm run secrets:example # create backend/local_secrets/ from the committed templates
+npm run api:check       # backend self-check: secrets + PostgreSQL + S3 round trip
+npm run secrets:example # create backend/local_secrets/ and backend/.env from templates
 npm run build:api       # compile backend
 npm run docs:check      # verify the .claude/skills mirror
 ```
@@ -90,12 +91,15 @@ failures unrelated to current work; eslint does not yet cover `backend/`.
 
 Every line has to earn its place. Prefer deleting to adding.
 
-**Comments.** No comment that restates the code. No section-divider banners, no
-docstring on a function whose name and signature already say it. Comment only what the
-code cannot record: a non-obvious constraint, a workaround for external behaviour, or a
-decision a reader would otherwise reverse. One or two lines. Rationale, history and
-rejected alternatives belong in `docs/` — a second copy in source guarantees one of them
-goes stale.
+**Comments.** The test is not "is this true and interesting" — almost everything passes
+that. The test is: **would a competent reader make a wrong change without this line, and
+would the mistake be silent?** If the code fails loudly when they get it wrong, the
+failure is the comment. Expect one or two comments in a file, often zero.
+
+Specifically banned: restating the code, section-divider banners, a docstring on a
+function whose name and signature already say it, and **carrying rationale across from
+`docs/` or a reference file while transcribing**. Design history, alternatives and "why
+not X" stay where they are; a second copy in source guarantees one of them goes stale.
 
 **New code: "nothing calls it yet" is not the test.** This is a migration branch.
 Building Vault, S3, the pool and the auth flow before their consumers exist is the work,
@@ -110,6 +114,9 @@ No abstraction for a single call site, and no file that exists only to re-export
 
 **Existing verbosity is not a precedent.** When editing an over-commented or over-built
 file, trim rather than match it.
+
+**Keep chat replies short.** Lead with the answer. Add background, alternatives and
+caveats only when asked, or when a decision genuinely turns on them.
 
 ## Active constraint: migrating off Supabase
 
@@ -130,10 +137,10 @@ Supabase Storage is not a Postgres feature, and browsers cannot speak the Postgr
 wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
 
 - **Never use the Keycloak identity claim as a foreign key.** The claim here is `upn`
-  (an employee number — `sub` is never read in this environment), and it differs from
-  the Supabase user id already in `user_sounds.user_id`. Ownership references
-  `app_users.id` with `upn` resolved per request. Getting this wrong orphans every
-  board, silently.
+  (an employee number — `sub` is never read in this environment). It is stored **directly**
+  in `user_sounds.user_id` and `shared_sounds.owner_id` as `text`; there is no users table.
+  Existing rows hold Supabase UUIDs, so the data import must rewrite them. Getting that
+  wrong orphans a board, silently.
 - **Never persist an absolute URL to a media file in the database.**
   `shared_sounds.file_url` holding a signed URL is why the current data cannot move.
 - **A valid token proves identity, not permission.** Keycloak does not do
