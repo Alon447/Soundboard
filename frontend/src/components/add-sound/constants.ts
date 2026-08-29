@@ -18,6 +18,5 @@ export const COLOR_OPTIONS = [
 ];
 
 export const ICONS_MAP = Icons as unknown as Record<string, Icons.LucideIcon>;
-export const YOUTUBE_SERVER = 'http://localhost:3001';
 export const VIDEO_EXTENSIONS = /\.(mov|mp4|mkv|webm|avi|flv|m4v|wmv)$/i;
 export const AUDIO_EXTENSIONS = /\.(mp3|wav|ogg|m4a|flac|aac|opus)$/i;

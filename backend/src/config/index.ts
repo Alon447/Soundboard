@@ -42,6 +42,13 @@ const configSchema = z
 
 		PG_ENV: z.enum(['dev', 'prod']).default('dev'),
 
+		/**
+		 * The `user_sounds.user_id` the mock identity owns, used only when IS_BLACK_ENV.
+		 * Set it to your Supabase user UUID to develop against your real board; it becomes
+		 * a Keycloak `upn` once db/migrations/0002 has rewritten the column.
+		 */
+		MOCK_USER_ID: optionalEnv,
+
 		// Optional here, then required by superRefine unless IS_BLACK_ENV. Declaring them
 		// unconditionally required would force dummy values on every developer.
 		/** KV v2 mount, e.g. https://vault.internal/v1/kv — /data/<name> is appended. */

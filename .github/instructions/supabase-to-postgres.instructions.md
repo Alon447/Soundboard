@@ -40,13 +40,25 @@ The `backend/` workspace exists with the infrastructure layers done:
   put/get/head/delete
 - `backend/src/utils/pg.ts` — `getPool()` one memoised `Pool` on the write port, `SELECT 1`
   probe, `closePool()`
+- `backend/src/index.ts` — Express 5 app, startup probe, error handler, SIGTERM shutdown
+- `backend/src/middleware/requireUser.ts` — `req.user` from `MOCK_USER_ID` under
+  `IS_BLACK_ENV`, 501 otherwise. It grants no privileges.
+- `backend/src/routes/userSounds.ts` — the five board routes, every one caller-scoped
+- **No `packages/shared` and no turbo** — both were built and removed. `SOUNDS` stays in
+  `frontend/src/lib/sounds.ts`, the API neither seeds nor validates `sound_id`, and `POST
+  /api/user-sounds` takes an array so the client can seed its own board in one call.
 - `backend/src/utils/envCheck.ts`, `backend/src/utils/logger.ts`
 - `backend/src/checkConnectivity.ts` — `npm run api:check`
 - `db/migrations/0001_init.sql` (three tables) and `docker-compose.yaml` (MinIO only —
   the dev database is Supabase, reached over `pg` with TLS)
 
 **Do not add a second way to read secrets, build an S3 client, or open a database pool.**
-Still to come: the OIDC routes, the HTTP layer and `packages/shared`.
+Still to come: the OIDC routes and the S3 upload path.
+
+Two things in `routes/userSounds.ts` that look odd and are not: ownership compares
+`user_id::text = $1` so queries work before and after `0002` changes the column type, and
+`gain` is selected as `gain::double precision` because `node-postgres` returns `numeric` as a
+string.
 
 Backend conventions already set by that code: ESM with `.js` extensions on relative imports
 (NodeNext), Zod at every boundary, object-first logging, never log a secret value, and no
@@ -119,7 +131,7 @@ fallback values for things the architecture guarantees.
   source to be non-null, so deleting a referenced row fails the check constraint. Use
   `on delete cascade`.
 - No index on `user_sounds.user_id` despite every read filtering on it.
-- `YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code — delete, don't port.
+- ~~`YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER`~~ — deleted.
 
 ## Order of work
 

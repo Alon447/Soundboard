@@ -37,54 +37,58 @@ browser OIDC library. There is no signup or password endpoint to build; `/auth/l
 did implicitly is map the Keycloak `upn` claim onto the existing Supabase user id; see
 [`target-architecture.md`](./target-architecture.md).
 
-## Database — 11 calls, 2 tables
+## Database — 7 calls, 1 table
 
-All in `frontend/src/lib/useUserSounds.ts` unless noted.
+All in `frontend/src/lib/useUserSounds.ts`. The replacement route exists for every one of
+them; what remains is pointing the hook at `/api` instead of PostgREST.
 
-| Purpose | Call |
-| --- | --- |
-| load board | `.from('user_sounds').select('*, shared_sound:shared_sounds(*)').eq('user_id', userId).order('position', { ascending: true })` |
-| seed first login | `.from('user_sounds').insert(seededRows).select('*')` — all 9 `SOUNDS`, `position = index` |
-| add built-in | `.from('user_sounds').insert({ user_id, sound_id, name, color, icon, gain, position })` |
-| create shared asset | `.from('shared_sounds').insert({ owner_id, owner_name, name, storage_path, file_url, color, icon, gain: 1 }).select('id').single()` |
-| add upload pad | `.from('user_sounds').insert({ user_id, sound_id: null, shared_sound_id, name, color, icon, gain: 1, position })` |
-| add from library | `.from('user_sounds').insert({ user_id, sound_id: null, shared_sound_id, name, color, icon, gain, position })` |
-| remove pad | `.from('user_sounds').delete().eq('id', dbId)` — **no `user_id` filter** |
-| move pad | two parallel `.from('user_sounds').update({ position }).eq('id', ...)` — **not transactional** |
-| set gain | `.from('user_sounds').update({ gain }).eq('id', dbId)` |
-| community library (`useSharedSounds.ts`) | `.from('shared_sounds').select('*').eq('is_public', true).order('created_at', { ascending: false })` — no pagination |
+| Purpose | Call | Replaced by |
+| --- | --- | --- |
+| load board | `.from('user_sounds').select('*, shared_sound:shared_sounds(*)').eq('user_id', userId).order('position', { ascending: true })` | `GET /api/user-sounds` |
+| seed first login | `.from('user_sounds').insert(seededRows).select('*')` — all 15 `SOUNDS`, `position = index` | same `GET`, in its transaction |
+| add built-in | `.from('user_sounds').insert({ user_id, sound_id, ... , position })` | `POST /api/user-sounds` |
+| remove pad | `.from('user_sounds').delete().eq('id', dbId)` — **no `user_id` filter** | `DELETE /api/user-sounds/:id` |
+| move pad | two parallel `.from('user_sounds').update({ position }).eq('id', ...)` — **not transactional** | `POST /api/user-sounds/reorder` |
+| set gain | `.from('user_sounds').update({ gain }).eq('id', dbId)` | `PATCH /api/user-sounds/:id` |
 
-The embedded join `shared_sound:shared_sounds(*)` is the one PostgREST-specific
-feature. In plain SQL it is a `left join shared_sounds` whose columns must be
-re-nested into a `shared_sound` object, because `userSoundToBoard` reads
-`row.shared_sound?.file_url`.
+The embedded join `shared_sound:shared_sounds(*)` survives only as a fallback so pads stay
+audible until `db/migrations/0002` runs; after that no row has a `shared_sound_id` and the
+join returns nothing. The API does not implement it.
 
 Every call is wrapped in react-query. Remove / move / gain are optimistic with
 rollback. Only the `{ data, error }` return shape leaks into the hooks, so a
 `fetch`-based client with the same shape is a drop-in replacement.
 
-## Storage — 2 calls
+**Gone since this inventory was written:** the two `shared_sounds` inserts, the
+add-from-library insert and the community-library query. Uploads are parked and the
+community library was deleted — both return in phase 6 against S3.
+
+## Storage — 0 calls, done
+
+Both calls are gone. They were:
 
 | Purpose | Call |
 | --- | --- |
 | upload | `supabase.storage.from('sounds').upload('<user_id>/<Date.now()>.<ext>', file, { upsert: false })` |
 | get URL | `supabase.storage.from('sounds').createSignedUrl(filePath, 60*60*24*365*10)` |
 
-The resulting signed URL string is persisted verbatim into
-`shared_sounds.file_url`; `storage_path` keeps the object key. The migration
-comment states the reason: signed URLs are readable cross-user regardless of RLS,
-which is how the community library works at all.
+The signed URL was persisted verbatim into `shared_sounds.file_url`, which is what made the
+old data unportable.
 
-**Replaced by an S3 bucket plus `GET /api/shared-sounds/:id/audio`.** The closest
-thing to a like-for-like swap, since Supabase Storage is itself S3-backed — but with
-content-addressed keys and no URL stored in the database. The two calls above become
-a `PutObject` and nothing, because the URL is derived on the client from the row id.
+**How it was resolved:** the six existing uploads were downloaded and adopted as built-in
+sounds (`custom-1` … `custom-6` in `frontend/src/lib/sounds.ts`), so nothing depends on Storage or on
+`file_url` any more. `useUserSounds.addCustomSound` now throws, and the upload tab reports
+that uploads are being migrated. `db/migrations/0002` converts the affected pads to
+built-in `sound_id`s by matching the `Date.now()` stamp in `storage_path`.
 
-No `remove()`, `download()`, `getPublicUrl()` or `list()` anywhere. **There is no
-delete path for an upload**, so nothing to port — but also nothing reclaiming space.
+Uploads return in phase 6 as `POST /api/shared-sounds` (multipart → `PutObject`, content
+addressed) plus `GET /api/shared-sounds/:id/audio`, with no URL in the database. The
+presentational upload UI — `UploadSoundPanel`, the pickers, `ConversionProgress` — was kept
+for that; `CommunitySoundList` and `useSharedSounds.ts` were deleted because their types
+change shape.
 
-Bucket `sounds` is created `public = false`. Size cap is
-`file_size_limit = "50MiB"` in `supabase/config.toml`; the client enforces nothing.
+Bucket `sounds` is `public = false` with `file_size_limit = "50MiB"` in
+`supabase/config.toml`. Nothing writes to it now, and the client still enforces no cap.
 
 ## Supabase-specific SQL in `supabase/migrations/`
 
@@ -139,6 +143,6 @@ call site or register `setTypeParser(20, Number)` when that route is built.
 - COOP/COEP headers exist only in the Vite dev/preview middleware.
 - `index.html` references `https://bolt.new/static/og_default.png` for `og:image`
   (inert, but an external reference).
-- `frontend/src/components/add-sound/constants.ts` has `YOUTUBE_SERVER =
-  'http://localhost:3001'`, used only by the unreferenced `YouTubeSoundPanel.tsx`.
-- `frontend/public/sounds/` filenames contain spaces, `!` and curly quotes.
+- ~~`YOUTUBE_SERVER` / `YouTubeSoundPanel.tsx`~~ — **deleted**, both of them.
+- ~~`frontend/public/sounds/` filenames contain spaces, `!` and curly quotes~~ — **fixed.**
+  All 15 files are slugs now (`vine-boom.mp4`, `custom-1.mp3`).

@@ -34,11 +34,14 @@ contradiction next to it.
 
 An npm workspace with two packages: `frontend/` (`@soundboard/frontend`, the Vite SPA) and
 `backend/` (`@soundboard/backend`, Vault + S3 so far). The root `package.json` is workspace
-orchestration only. `packages/shared` does not exist yet. All scripts run from the root.
+orchestration only. **No `packages/shared` and no turbo** — both were built and removed, so
+`SOUNDS` lives only in `frontend/src/lib/sounds.ts`, the API cannot validate `sound_id`, and
+the client seeds its own board. All scripts run from the root.
 
 ```bash
 docker compose up -d    # minio on 9010 + bucket (no postgres: dev uses Supabase over pg)
 npm run dev             # Vite on 3000, proxying /api and /auth to the backend on 3001
+npm run dev:api         # backend on 3001, tsx watch
 npm run typecheck:all   # frontend + backend
 npm run api:check       # backend self-check: secrets + PostgreSQL + S3 round trip
 npm run secrets:example # create backend/local_secrets/ and backend/.env from templates
@@ -171,8 +174,9 @@ wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
   `node-postgres`. `gain` is `numeric`.
 - The AWS SDK's default credential chain probes EC2 instance metadata, which hangs
   rather than fails in a closed network. Pass credentials explicitly.
-- `moveSound` uses two racing `UPDATE`s instead of one transaction.
-- Nothing ever deletes an upload's bytes or its `shared_sounds` row.
-- No client-side upload size limit; the only cap was Storage's 50 MiB.
-- `YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code.
+- `moveSound` uses two racing `UPDATE`s instead of one transaction. Fixed in
+  `POST /api/user-sounds/reorder`, but the hook still calls Supabase.
+- Nothing deletes an upload's bytes or its `shared_sounds` row, and there is no
+  client-side size limit. Both are phase-6 work, and uploads are parked meanwhile.
+- ~~`YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code~~ — both deleted.
 - `.env` contains a committed anon key that needs rotating. Never echo its value.

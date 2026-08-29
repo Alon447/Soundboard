@@ -3,25 +3,20 @@ import * as Icons from 'lucide-react';
 import { Button, Tab, TabList, TabPanel, Tabs } from '@heroui/react';
 import { extractAudioFromVideo, type ConvertProgress } from '@/lib/ffmpegConvert';
 import BuiltinSoundList from '@/components/add-sound/BuiltinSoundList';
-import CommunitySoundList from '@/components/add-sound/CommunitySoundList';
 import UploadSoundPanel from '@/components/add-sound/UploadSoundPanel';
 import { isAcceptableFile, isVideoFile } from '@/components/add-sound/utils';
-import { useSharedSounds } from '@/lib/useSharedSounds';
-import type { SharedSound } from '@/lib/supabase';
 
 type Props = {
 	existingSoundIds: string[];
 	onAddBuiltin: (soundId: string) => Promise<void>;
 	onAddCustom: (file: File, name: string, color: string, icon: string) => Promise<void>;
-	onAddShared: (shared: SharedSound) => Promise<void>;
 	onClose: () => void;
 };
 
-export default function AddSoundModal({ existingSoundIds, onAddBuiltin, onAddCustom, onAddShared, onClose }: Props) {
+export default function AddSoundModal({ existingSoundIds, onAddBuiltin, onAddCustom, onClose }: Props) {
 	const [loading, setLoading] = useState(false);
 	const [statusMsg, setStatusMsg] = useState('');
 	const [convertProgress, setConvertProgress] = useState<ConvertProgress | null>(null);
-	const { sharedSounds, loading: sharedLoading } = useSharedSounds();
 
 	const [file, setFile] = useState<File | null>(null);
 	const [customName, setCustomName] = useState('');
@@ -55,16 +50,6 @@ export default function AddSoundModal({ existingSoundIds, onAddBuiltin, onAddCus
 		}
 	};
 
-	const handleAddShared = async (shared: SharedSound) => {
-		setLoading(true);
-		try {
-			await onAddShared(shared);
-			onClose();
-		} finally {
-			setLoading(false);
-		}
-	};
-
 	const applyFile = (nextFile: File) => {
 		if (!isAcceptableFile(nextFile)) return;
 		setFile(nextFile);
@@ -83,16 +68,13 @@ export default function AddSoundModal({ existingSoundIds, onAddBuiltin, onAddCus
 			if (isVideoFile(file)) {
 				setStatusMsg('Extracting audio…');
 				finalFile = await extractAudioFromVideo(file, (progress) => setConvertProgress(progress));
-				setStatusMsg('Uploading…');
-			} else {
-				setStatusMsg('Uploading…');
 			}
 
+			setStatusMsg('Uploading…');
 			await onAddCustom(finalFile, customName.trim(), customColor, customIcon);
 			onClose();
 		} catch (error) {
-			console.error(error);
-			setStatusMsg('Something went wrong. Please try again.');
+			setStatusMsg(error instanceof Error ? error.message : 'Something went wrong. Please try again.');
 		} finally {
 			setLoading(false);
 			setConvertProgress(null);
@@ -150,10 +132,6 @@ export default function AddSoundModal({ existingSoundIds, onAddBuiltin, onAddCus
 								<Icons.Upload className="w-3.5 h-3.5 mr-1.5 inline" />
 								Upload / MOV
 							</Tab>
-							<Tab id="community">
-								<Icons.Users className="w-3.5 h-3.5 mr-1.5 inline" />
-								Community
-							</Tab>
 						</TabList>
 
 						<TabPanel id="builtin">
@@ -190,16 +168,6 @@ export default function AddSoundModal({ existingSoundIds, onAddBuiltin, onAddCus
 								onColorChange={setCustomColor}
 								onIconChange={setCustomIcon}
 								inputRef={fileInputRef}
-							/>
-						</TabPanel>
-
-						<TabPanel id="community">
-							<CommunitySoundList
-								sharedSounds={sharedSounds}
-								loading={loading || sharedLoading}
-								onAddShared={(shared) => {
-									void handleAddShared(shared);
-								}}
 							/>
 						</TabPanel>
 					</Tabs>

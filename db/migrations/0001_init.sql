@@ -1,3 +1,6 @@
+-- Fresh-database path, for the closed environment. The Supabase database already holds
+-- these tables in an older shape and is migrated in place by 0002 instead.
+
 create extension if not exists pgcrypto;
 
 create table sound_assets (

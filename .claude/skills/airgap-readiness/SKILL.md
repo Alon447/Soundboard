@@ -72,7 +72,7 @@ Current state:
 | --- | --- | --- |
 | `https://unpkg.com/@ffmpeg/core-mt@…` | `frontend/src/lib/ffmpegConvert.ts` | breaks video upload — fix it |
 | `https://bolt.new/static/og_default.png` | `index.html` `og:image` | inert; remove for tidiness |
-| `http://localhost:3001` (`YOUTUBE_SERVER`) | `frontend/src/components/add-sound/constants.ts` | dead code, delete it |
+| ~~`http://localhost:3001` (`YOUTUBE_SERVER`)~~ | ~~`add-sound/constants.ts`~~ | deleted, with `YouTubeSoundPanel.tsx` |
 
 Fonts and icons are safe: `lucide-react` ships SVG components in the bundle, and
 there is no webfont link. Tailwind 4 builds at compile time.
@@ -81,9 +81,11 @@ Before shipping, re-check with a grep for `https?://` across `frontend/src/` and
 `index.html`, and load the built app with devtools offline. Anything that 404s in
 the network panel is a blocker.
 
-## 4. Built-in audio filenames are hostile
+## 4. Built-in audio filenames — fixed, keep it that way
 
-`frontend/public/sounds/` contains spaces, `!`, parentheses, and curly quotes:
+**Done.** All 15 files are ASCII slugs (`get-out.mp4`, `fahh.mp4`, `custom-1.mp3`). The rule
+stands for anything added later: no spaces, no `!`, no parentheses, no curly quotes. What it
+used to look like, and why it mattered:
 
 ```
 Get out sound effect!! - YSL (360p).mp4
@@ -91,10 +93,12 @@ Get out sound effect!! - YSL (360p).mp4
 ```
 
 Vite's dev server tolerates them. nginx, IIS, and proxies encode and normalise
-differently, and the curly quotes are non-ASCII. Rename them to ASCII slugs
-(`get-out.mp4`, `fahh.mp4`) and update `audio_path` in `frontend/src/lib/sounds.ts` in the
-same commit. `sound_id` values must not change — those are stored in the database
-and identify existing pads.
+differently, and the curly quotes are non-ASCII.
+
+`audio_path` lives in `frontend/src/lib/sounds.ts`, the only copy — the API has no built-in
+list. **`sound_id` values must not change** — they are stored in the database
+and identify existing pads. That is why the six adopted uploads are `custom-1` … `custom-6`
+and `db/migrations/0002` rewrites the pads that pointed at them.
 
 ## 5. Upload size limits
 

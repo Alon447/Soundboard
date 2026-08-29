@@ -316,6 +316,14 @@ yanshuf3's root `package.json` is the naming to match:
 with turbo for the task graph and `packages/shared` consumed by name, kept fresh by a
 `pre*` hook on every consumer script (`"predev": "npm --prefix .. run build -w @yanshuf/shared"`).
 
+**Soundboard takes the workspace names only — no turbo, and no `packages/shared`.** Both
+were built and then removed. Turbo would add a dependency to mirror into Nexus and a second
+task-graph description to cache two build steps that take about a second. The shared package
+existed to give the API the `SOUNDS` list; dropping it moved board seeding back to the client
+and cost server-side `sound_id` validation, which was judged the cheaper trade. The `pre*`
+hook convention goes with it — nothing needs building before its consumers now. Revisit both
+if a third package appears.
+
 Both projects proxy in dev from Vite so everything is same-origin, with the auth routes
 pointing at the sidecar rather than the API. hana2trino's is the more explicit example:
 

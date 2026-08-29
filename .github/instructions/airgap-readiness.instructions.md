@@ -54,17 +54,17 @@ No CDN links, no webfonts, no remote scripts. `lucide-react` ships SVG component
 the bundle and Tailwind 4 builds at compile time, so the current bundle is clean
 apart from the ffmpeg core.
 
-Existing references: the unpkg URL above (must fix), `https://bolt.new/static/og_default.png`
-as `og:image` in `index.html` (inert, remove for tidiness), and
-`YOUTUBE_SERVER = 'http://localhost:3001'` in `frontend/src/components/add-sound/constants.ts`
-(dead code, delete).
+Existing references: the unpkg URL above (must fix) and
+`https://bolt.new/static/og_default.png` as `og:image` in `index.html` (inert, remove for
+tidiness). `YOUTUBE_SERVER` and `YouTubeSoundPanel.tsx` have been deleted.
 
 Before shipping, grep `frontend/src/` and `index.html` for `https?://` and load the built app
 with devtools offline. Anything that 404s in the network panel is a blocker.
 
-## 4. Built-in audio filenames are hostile
+## 4. Built-in audio filenames — fixed, keep it that way
 
-`frontend/public/sounds/` contains spaces, `!`, parentheses and curly quotes, e.g.
+**Done:** all 15 files are ASCII slugs, with `audio_path` in `frontend/src/lib/sounds.ts` —
+the only copy. The rule still applies to anything added later. It used to be
 `“Fahh” - meme sound effect - Sound effects (1080p).mp4`. Vite's dev server tolerates
 them; nginx, IIS and proxies encode and normalise differently. Rename to ASCII slugs
 and update `audio_path` in `frontend/src/lib/sounds.ts` in the same commit.

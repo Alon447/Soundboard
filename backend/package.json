@@ -4,6 +4,7 @@
 	"version": "0.0.0",
 	"type": "module",
 	"scripts": {
+		"dev": "tsx watch src/index.ts",
 		"build": "tsc -p tsconfig.json",
 		"typecheck": "tsc -p tsconfig.json --noEmit",
 		"check:connectivity": "tsx src/checkConnectivity.ts",
@@ -12,10 +13,12 @@
 	"dependencies": {
 		"@aws-sdk/client-s3": "^3.1120.0",
 		"dotenv": "^16.6.1",
+		"express": "^5.1.0",
 		"pg": "^8.16.3",
 		"zod": "^3.25.76"
 	},
 	"devDependencies": {
+		"@types/express": "^5.0.3",
 		"@types/node": "^22.19.1",
 		"@types/pg": "^8.15.5"
 	}

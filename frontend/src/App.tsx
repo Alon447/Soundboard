@@ -23,7 +23,6 @@ export default function App() {
 		error,
 		addBuiltinSound,
 		addCustomSound,
-		addSharedSound,
 		removeSound,
 		moveSound,
 		updateGain,
@@ -287,7 +286,6 @@ export default function App() {
 					existingSoundIds={existingSoundIds}
 					onAddBuiltin={addBuiltinSound}
 					onAddCustom={addCustomSound}
-					onAddShared={addSharedSound}
 					onClose={() => setShowAddModal(false)}
 				/>
 			)}

@@ -8,8 +8,12 @@ Serve the built frontend from the same origin, so there is no CORS,
 `Cross-Origin-Embedder-Policy: require-corp` is satisfied for audio, and the session cookie
 can be `SameSite=Lax`.
 
-Stack: Express or Fastify + `pg` + `@aws-sdk/client-s3` + `jose` + `openid-client`. **One
-process** — it serves `/api/*`, owns `/auth/*`, and reads Vault directly.
+Stack: **Express 5** (matching yanshuf3) + `pg` + `@aws-sdk/client-s3` + `zod`, with `jose`
+and `openid-client` still to come. **One process** — it serves `/api/*`, owns `/auth/*`, and
+reads Vault directly.
+
+The board routes are built. Errors go through `httpError(status, code, message)` and a single
+handler that maps anything else to a 500, so the driver's text never reaches the client.
 
 ## Auth model
 
@@ -120,6 +124,9 @@ redirecting when already on the login path. Copy both.
 | POST | `/api/user-sounds/reorder` | `{ order: uuid[] }` | `204` |
 | DELETE | `/api/user-sounds/:id` | — | `204` |
 
+**As built, `POST` takes an array of pads** — one route covers a single add and a 15-pad
+seed. Notes below marked *superseded* describe the earlier server-seeding design.
+
 - `GET` must return `shared_sound` as a **nested object**, not flattened columns —
   `userSoundToBoard` reads `row.shared_sound?.…`. The `jsonb_build_object` query is
   in `target-schema.sql`.
@@ -127,11 +134,13 @@ redirecting when already on the login path. Copy both.
   client-supplied index the way the current code does (`position: sounds.length`).
 - `reorder` replaces `moveSound`'s two racing `UPDATE`s with one statement. Validate
   that the id set matches the caller's pads exactly, and scope on `user_id`.
-- First-login seeding: have `GET /api/user-sounds` seed the 9 built-ins when the user
-  has no rows, in the same transaction. That matches current behaviour and avoids a
-  round trip the client has to remember to make. Seed data comes from the `SOUNDS`
-  list in `packages/shared` — one copy, imported by both sides, or it will drift
-  silently.
+- First-login seeding — *superseded.* The plan was for `GET /api/user-sounds` to seed the
+  built-ins in its own transaction, from a `SOUNDS` list in `packages/shared`. That package
+  was removed, so **the client seeds**: it reads the board and, if empty, `POST`s all 15
+  pads. `SOUNDS` lives in `frontend/src/lib/sounds.ts` only.
+- Consequently the server **does not validate `sound_id`** against a list of built-ins,
+  because it has none. It validates shape only. A pad naming an unknown sound renders
+  silently with no audio. See `docs/target-architecture.md`, "Why a workspace at all".
 
 ### Community library
 
@@ -242,7 +251,8 @@ a retry, do not redirect, or you get a loop.
 ## Type changes
 
 `SharedSound` loses `storage_path` and `file_url`. `UserSound` loses
-`custom_file_url`. Both move to `packages/shared/src/types.ts`.
+`custom_file_url`. They stay in `frontend/src/lib/` — there is no shared package to move
+them to, so the backend describes its own row shape independently.
 
 ```ts
 export type SharedSound = {

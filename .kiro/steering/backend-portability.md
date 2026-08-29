@@ -1,6 +1,6 @@
 ---
 inclusion: fileMatch
-fileMatchPattern: ["backend/**", "frontend/src/lib/**", "frontend/src/components/AuthPage.tsx", "supabase/**", "db/**", "packages/shared/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/house-conventions.md"]
+fileMatchPattern: ["backend/**", "frontend/src/lib/**", "frontend/src/components/AuthPage.tsx", "supabase/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/house-conventions.md"]
 ---
 
 # You are editing the portability-critical layer
@@ -64,9 +64,10 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    number. `node-postgres` returns `numeric` as a **string**; PostgREST returns it as
    a number. `gain` is the existing landmine.
 
-8. **Keep the data layer behind the hooks.** `useUserSounds` and `useSharedSounds`
-   are the only things that touch the backend. Do not scatter queries into
-   components — that turns a contained port into a rewrite.
+8. **Keep the data layer behind the hook.** `useUserSounds` is the only thing that
+   touches the backend. Do not scatter queries into components — that turns a
+   contained port into a rewrite. On the server side the mirror rule holds: SQL lives
+   in `backend/src/routes/`, and every mutation is scoped by the caller's id.
 
 9. **Keep the `{ data, error }` return shape** for anything replacing a supabase-js
    call, and keep the `useAuth` context shape (`user.id`, `user.email`,

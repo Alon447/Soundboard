@@ -86,16 +86,18 @@ dev and preview servers only — a production host must set them itself.
 
 ## Data layer
 
-Two hooks, both react-query, are the *only* things that talk to the database:
+One hook, react-query, is the *only* thing that talks to the database:
+`frontend/src/lib/useUserSounds.ts` — the board. One query plus four mutations (add
+built-in, remove, move, update gain), the last three optimistic. `addCustomSound` still
+exists but throws: uploads are parked until the S3 route lands.
 
-- `frontend/src/lib/useUserSounds.ts` — the board. One query plus six mutations
-  (add built-in, add custom, add shared, remove, move, update gain). Remove, move
-  and gain are optimistic.
-- `frontend/src/lib/useSharedSounds.ts` — the community library. One query.
+`frontend/src/lib/supabase.ts` holds the client plus the `UserSound` type. It keeps two
+legacy read-only fields, `custom_file_url` and `shared_sound.file_url`, purely so pads stay
+audible until `db/migrations/0002` runs.
 
-`frontend/src/lib/supabase.ts` holds the client plus the only TypeScript mirror of the
-schema (`UserSound`, `SharedSound`). Those two types are the contract any
-replacement backend has to satisfy.
+**The replacement already exists.** `backend/src/routes/userSounds.ts` serves the same five
+operations over `pg`; the hook has not been pointed at it yet. That swap is the next step,
+and it is what removes the last data-layer Supabase call.
 
 No realtime subscriptions, no RPC, no edge functions.
 
@@ -108,37 +110,49 @@ No realtime subscriptions, no RPC, no edge functions.
 | `backend/src/utils/pg.ts` | One memoised `pg.Pool`, startup probe, `closePool()` |
 | `backend/src/config/index.ts` | Zod-validated env, exits at boot on anything missing |
 | `backend/src/checkConnectivity.ts` | `npm run api:check` — four checks: secrets, PostgreSQL, S3 |
-| `db/migrations/0001_init.sql` | Target schema: `sound_assets`, `shared_sounds`, `user_sounds` |
+| `backend/src/index.ts` | Express 5 bootstrap, startup probe, error handler, shutdown |
+| `backend/src/middleware/requireUser.ts` | Identity; `MOCK_USER_ID` under `IS_BLACK_ENV` |
+| `backend/src/routes/userSounds.ts` | The five board routes, all scoped to the caller |
+| `db/migrations/0001_init.sql` | Fresh-database schema: `sound_assets`, `shared_sounds`, `user_sounds` |
+| `db/migrations/0002_*.sql` | In-place migration of the live Supabase `user_sounds` |
 | `docker-compose.yaml` | MinIO only; the dev database is Supabase, reached over `pg` |
+
 | `frontend/src/App.tsx` | Layout, keybindings, audio engine, auth guard |
 | `frontend/src/lib/useUserSounds.ts` | Every board read/write; audio path resolution |
-| `frontend/src/lib/useSharedSounds.ts` | Community library query |
-| `frontend/src/lib/supabase.ts` | Client + schema types |
+| `frontend/src/lib/supabase.ts` | Client + the `UserSound` type |
 | `frontend/src/lib/useAuth.tsx` | Session context (`getSession`, `onAuthStateChange`, `signOut`) |
 | `frontend/src/components/AuthPage.tsx` | Only auth UI; email + password |
-| `frontend/src/lib/sounds.ts` | Built-in pad declarations |
+| `frontend/src/lib/sounds.ts` | `SOUNDS` — the 15 built-ins. The only copy; the API has none |
 | `frontend/src/lib/ffmpegConvert.ts` | Browser-side video → MP3 |
 | `frontend/src/store/soundStore.ts` | UI flags + `AudioContext`/buffer cache |
 | `supabase/migrations/*.sql` | Schema, RLS, storage bucket |
 
 ## Known rough edges
 
-- Removing a pad deletes only the `user_sounds` row. The `shared_sounds` row and
-  the Storage object are never deleted, so uploads accumulate forever. There is
-  no delete path for an upload anywhere in the client.
+Still live in the client, because it still reads through PostgREST:
+
 - `moveSound` issues two independent `UPDATE`s via `Promise.all`, not one
   transaction. A partial failure leaves duplicate `position` values.
 - `removeSound` runs `.delete().eq('id', dbId)` with no `user_id` filter. Only RLS
   stops one user deleting another's pad.
-- No client-side upload size check. The only limit is Storage's 50 MiB.
-- `user_sounds.user_id` has no index, though every read filters on it.
-- `shared_sound_id` is `on delete set null` while `sound_source_check` requires one
-  of the three sources to be non-null — so deleting a `shared_sounds` row that a
-  pad references will fail the check constraint. Latent, because nothing deletes.
-- `YouTubeSoundPanel.tsx` + `YOUTUBE_SERVER` are dead code; `AddSoundModal` only
-  renders the `builtin`, `upload` and `community` tabs. No `server` npm script exists.
 - `index.html` still has bolt.new `og:image` URLs and the title
   "Python Soundboard Application".
+
+Fixed in the API but not yet reached, since the hook has not been repointed: the reorder
+route is one transactional statement, every mutation is scoped by `user_id`, and `position`
+is assigned server-side rather than from `sounds.length`.
+
+Fixed outright:
+
+- ~~`user_sounds.user_id` has no index~~ — `0002` adds `(user_id, position)`.
+- ~~`shared_sound_id` is `on delete set null`, which violates `sound_source_check`~~ —
+  `0002` rewrites the constraint to exactly-one-of and drops `custom_file_url`.
+- ~~`YouTubeSoundPanel.tsx` + `YOUTUBE_SERVER` are dead code~~ — both deleted.
+- ~~Sound filenames contain spaces, `!` and curly quotes~~ — all 15 are slugs.
+
+Deferred with the parked upload path: no client-side size check, and nothing reclaims
+Storage objects or `shared_sounds` rows. Both are phase-6 work, and neither can grow now
+that `addCustomSound` throws.
 
 ## Related reading
 

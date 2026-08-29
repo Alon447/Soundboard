@@ -18,7 +18,8 @@ for in-browser video → MP3 conversion. Backend is currently Supabase
 
 ```bash
 docker compose up -d    # minio on 9010 + bucket (no postgres: dev uses Supabase over pg)
-npm run dev             # vite dev server (frontend)
+npm run dev             # vite dev server (frontend), proxies /api to 3001
+npm run dev:api         # backend on 3001, tsx watch
 npm run build           # production build (frontend)
 npm run typecheck       # frontend
 npm run typecheck:api   # backend
@@ -61,9 +62,14 @@ next to it.
 ## Repository shape
 
 An npm workspace with two packages: `frontend/` (`@soundboard/frontend`, the Vite SPA) and
-`backend/` (`@soundboard/backend`, Vault + S3 + PostgreSQL so far). The root `package.json` is workspace
-orchestration only. `packages/shared` does not exist yet — it arrives when the backend needs
-the `SOUNDS` list to seed a board. See `docs/target-architecture.md`.
+`backend/` (`@soundboard/backend`, Express 5 + Vault + S3 + PostgreSQL). The root
+`package.json` is workspace orchestration only.
+
+**No `packages/shared` and no turbo** — both were built and removed. The workspace exists to
+keep `pg`, `@aws-sdk/*` and `jose` out of the browser bundle, not to share code. `SOUNDS`
+lives only in `frontend/src/lib/sounds.ts`, so the API cannot validate `sound_id` and does
+not seed: the client reads its board and `POST`s all 15 pads when it is empty. See
+`docs/target-architecture.md`.
 
 All scripts run from the root; no `cd` needed.
 
@@ -206,9 +212,10 @@ Skills in `.claude/skills/`:
   `node-postgres`. `gain` is `numeric`.
 - The AWS SDK's default credential chain probes EC2 instance metadata, which hangs
   rather than fails in a closed network. Pass credentials explicitly.
-- `moveSound` runs two racing `UPDATE`s rather than one transaction.
-- Nothing ever deletes an upload's bytes or its `shared_sounds` row.
-- No client-side upload size limit exists; the only cap was Storage's 50 MiB.
-- `frontend/public/sounds/` filenames contain spaces, `!` and curly quotes.
-- `YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code.
+- `moveSound` runs two racing `UPDATE`s rather than one transaction. Fixed in
+  `POST /api/user-sounds/reorder`, but the hook still calls Supabase.
+- Nothing deletes an upload's bytes or its `shared_sounds` row, and there is no
+  client-side size limit. Both are phase-6 work; neither can grow while uploads are parked.
+- ~~Sound filenames contain spaces, `!` and curly quotes~~ — all 15 are ASCII slugs now.
+- ~~`YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code~~ — both deleted.
 - `.env` contains a committed Supabase anon key. Do not print it; it needs rotating.

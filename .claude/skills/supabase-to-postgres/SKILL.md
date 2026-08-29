@@ -1,6 +1,6 @@
 ---
 name: supabase-to-postgres
-description: Port the Soundboard app off Supabase (GoTrue auth, PostgREST, Storage) onto the closed-environment stack — PostgreSQL for data, S3 for audio bytes, Keycloak for auth, and a Node API tying them together. Use when working on auth, the data layer, sound storage, migrations, the API, the workspace layout, or anything about running this app on-prem. Also use when touching frontend/src/lib/useUserSounds.ts, frontend/src/lib/useSharedSounds.ts, frontend/src/lib/supabase.ts, frontend/src/lib/useAuth.tsx, frontend/src/components/AuthPage.tsx, or supabase/migrations.
+description: Port the Soundboard app off Supabase (GoTrue auth, PostgREST, Storage) onto the closed-environment stack — PostgreSQL for data, S3 for audio bytes, Keycloak for auth, and a Node API tying them together. Use when working on auth, the data layer, sound storage, migrations, the API, the workspace layout, or anything about running this app on-prem. Also use when touching frontend/src/lib/useUserSounds.ts, frontend/src/lib/supabase.ts, frontend/src/lib/useAuth.tsx, frontend/src/components/AuthPage.tsx, backend/src/routes, backend/src/middleware, db/migrations, or supabase/migrations.
 ---
 
 # Porting Soundboard off Supabase
@@ -150,7 +150,20 @@ these — extend them:
 | `db/migrations/0001_init.sql` | the three tables, from `references/target-schema.sql` |
 | `docker-compose.yaml` | MinIO only. Dev PostgreSQL **is** Supabase, over `pg` with TLS unverified |
 
-Still to come: the OIDC routes, the HTTP layer, and `packages/shared`.
+| `backend/src/index.ts` | Express 5 app, startup pool probe, error handler, SIGTERM shutdown |
+| `backend/src/middleware/requireUser.ts` | `req.user` from `MOCK_USER_ID` under `IS_BLACK_ENV`; 501 otherwise |
+| `backend/src/routes/userSounds.ts` | `GET`/`POST`/`PATCH`/`DELETE` + `POST /reorder`, all caller-scoped |
+| `backend/src/utils/httpError.ts` | `httpError(status, code, message)` for the error handler |
+
+
+Still to come: the OIDC routes and the S3 upload path.
+
+Three things in `routes/userSounds.ts` that look odd and are not: ownership is compared as
+`user_id::text = $1` so the queries work before and after `0002` changes the column type,
+`gain` is selected as `gain::double precision` because `numeric` comes back from
+`node-postgres` as a string, and `POST` takes an **array** because there is no shared
+`SOUNDS` list — the client seeds its own board, so one route serves both a single add and a
+15-pad seed. The server validates the shape of a pad, never that `sound_id` exists.
 
 `getPool()` uses `writePort` only — every route reads its own writes. yanshuf3's read/write
 split is worth copying if read routing ever appears, not before.
@@ -170,10 +183,12 @@ Each phase builds and typechecks on its own. No big-bang cutover.
    — cheap now, awkward later, and it keeps presigned URLs available as an option.
    Ship on Supabase and confirm no regression.
 3. ~~**Restructure**~~ — **done.** `frontend/` and `backend/` are npm workspaces; the root
-   `package.json` is orchestration only. `packages/shared` is deferred until the backend
-   needs the `SOUNDS` list.
-4. **Backend** — ~~migrations~~ and ~~the pool~~ **done** (`db/migrations/0001_init.sql`,
-   `backend/src/utils/pg.ts`). Remaining: the API from
+   `package.json` is orchestration only. **No `packages/shared` and no turbo** — both were
+   tried and removed. `SOUNDS` stays in the frontend and the client seeds its own board.
+4. **Backend** — ~~migrations~~, ~~the pool~~ and ~~the board routes~~ **done**
+   (`db/migrations/0001_init.sql` + `0002`, `backend/src/utils/pg.ts`,
+   `backend/src/routes/userSounds.ts` behind `requireUser`'s mock identity).
+   Remaining: the OIDC routes and the upload path from
    `references/api-contract.md`, the secrets module, the S3 client, the OIDC routes and
    per-request verification. **Build `IS_BLACK_ENV` mock mode first**, so the whole thing is
    developable with neither Keycloak nor Vault reachable. Import the captured data. Then
@@ -203,8 +218,9 @@ Changing them turns a contained port into a rewrite.
 ```
 
 `GET /api/me` populates `user`: the uppercased `upn` → `id`, `email` → `email`, display name
-→ `user_metadata.name`. Do that and `App.tsx`, `useUserSounds` and `useSharedSounds`
-need no changes at all. Note `user.id` is the **local** id, not the Keycloak claim.
+→ `user_metadata.name`. Do that and `App.tsx` and `useUserSounds` need no changes at all.
+`user.id` is the uppercased `upn`, and the route already returns this shape from the mock
+identity.
 
 `BoardSound.audio_path` must stay a plain fetchable, Web-Audio-decodable URL.
 
@@ -230,8 +246,8 @@ Do not port these forward.
 - `shared_sound_id` is `on delete set null` while `sound_source_check` requires one
   source to be non-null, so deleting a referenced row fails the check constraint.
   Use `on delete cascade`.
-- No index on `user_sounds.user_id` despite every read filtering on it.
-- `YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code. Delete, don't port.
+- ~~No index on `user_sounds.user_id`~~ — `0002` adds `(user_id, position)`.
+- ~~`YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code~~ — both deleted.
 
 ## Settle these before writing the backend
 

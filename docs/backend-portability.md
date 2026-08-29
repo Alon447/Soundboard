@@ -65,8 +65,8 @@ in yanshuf3's case, secrets into another service; Soundboard does neither. See
 [`house-conventions.md`](./house-conventions.md).
 
 Only four source files talk to Supabase, which is the good news:
-`frontend/src/lib/supabase.ts`, `frontend/src/lib/useAuth.tsx`, `frontend/src/components/AuthPage.tsx`,
-`frontend/src/lib/useUserSounds.ts`, `frontend/src/lib/useSharedSounds.ts`. See
+`frontend/src/lib/supabase.ts`, `frontend/src/lib/useAuth.tsx`, `frontend/src/components/AuthPage.tsx`
+and `frontend/src/lib/useUserSounds.ts` — 12 calls left, 7 data and 5 auth. See
 [`supabase-surface-inventory.md`](./supabase-surface-inventory.md) for the exact
 call sites.
 
@@ -367,17 +367,19 @@ id instead of the URL. Ship and confirm on Supabase.
 
 **Phase 1.5 — restructure the repository. Done.**
 `frontend/` and `backend/` are npm workspaces matching yanshuf3's naming, with the root
-`package.json` reduced to workspace orchestration. `packages/shared` is deferred until the
-backend needs the `SOUNDS` list to seed a board. The move rewrote 91 `src/` references
+`package.json` reduced to workspace orchestration. `packages/shared` was added for the
+seeding route and then removed, along with turbo — two packages, no task runner, and the
+client seeds its own board. The move rewrote 91 `src/` references
 across `docs/`, the skills, steering and instruction files, plus every `fileMatchPattern`
 and `applyTo` glob — exactly the breakage the `docs-sync` skill flagged in advance.
 
-**Phase 2 — stand up the new backend.** *In progress.* The secrets module, the S3 client,
-the migration set (`db/migrations/0001_init.sql`, no `auth.` or `storage.` references) and
-the connection pool (`backend/src/utils/pg.ts`) are done. `docker-compose.yaml` provides
-MinIO only — development points `pg` at the Supabase database, so there is one driver and
-one dialect across both environments. Remaining: the Node API, the OIDC routes and
-per-request token verification. Build
+**Phase 2 — stand up the new backend.** *In progress.* Done: the secrets module, the S3
+client, both migrations (`0001_init.sql` for a fresh database, `0002` altering the live
+Supabase `user_sounds`; no `auth.` or `storage.` references in either), the connection pool,
+and the Express 5 API serving the five board routes behind a mock identity.
+`docker-compose.yaml` provides MinIO only — development points `pg` at the Supabase
+database, so there is one driver and one dialect across both environments. Remaining: the
+OIDC routes and per-request token verification, then the S3 upload path. Build
 `IS_BLACK_ENV` mock mode first so the whole thing is developable with no Keycloak and no
 Vault reachable. Import the Phase 0 data, rewriting every Supabase UUID to its `upn`.
 Then test against the real closed-environment PostgreSQL, S3, Vault and Keycloak, not local

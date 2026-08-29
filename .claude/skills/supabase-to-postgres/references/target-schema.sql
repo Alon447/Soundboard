@@ -114,7 +114,8 @@ create index shared_sounds_asset_idx on shared_sounds (asset_id);
 create table user_sounds (
   id              uuid not null primary key default gen_random_uuid(),
   user_id         text not null,
-  -- built-in id from packages/shared builtinSounds (e.g. 'vine-boom')
+  -- built-in id from frontend/src/lib/sounds.ts (e.g. 'vine-boom'). Not validated
+  -- server-side: the API has no copy of the list.
   sound_id        text,
   -- set when the pad points at the shared library
   shared_sound_id uuid references shared_sounds(id) on delete cascade,

@@ -88,8 +88,8 @@ round-trips back without seeing a login form. **There is no login UI to build.**
 { user: { id, email, user_metadata: { name } } | null, session, loading, signOut }
 ```
 
-`GET /api/me` populates it. `App.tsx`, `useUserSounds` and `useSharedSounds` need no
-changes at all.
+`GET /api/me` populates it, and already returns this shape from the mock identity. `App.tsx`
+and `useUserSounds` need no changes at all.
 
 ### Soundboard owns the flow — no sidecar, no Python
 
@@ -205,7 +205,7 @@ What it switches for Soundboard:
 
 | Concern | Effect when set |
 | --- | --- |
-| identity | mock claims, Keycloak never contacted — the cookie path still runs |
+| identity | `MOCK_USER_ID` is the whole session; Keycloak never contacted |
 | data | the Supabase database, over `pg` with TLS — same driver, same SQL, different host |
 | storage | MinIO instead of the internal S3 |
 | secrets | `local_secrets/*.json` instead of Vault |
@@ -455,6 +455,7 @@ OIDC_ISSUER_URL        # must be byte-identical to the token's iss claim
 OIDC_SCOPE
 OIDC_REDIRECT_URI
 MAX_UPLOAD_BYTES
+MOCK_USER_ID          # IS_BLACK_ENV only: the user_sounds.user_id the mock session owns
 NODE_EXTRA_CA_CERTS    # internal CA, covers Vault, S3 and Keycloak
 AWS_EC2_METADATA_DISABLED=true
 ```
@@ -477,9 +478,8 @@ Matching yanshuf3's workspace naming rather than inventing our own:
 
 ```
 soundboard/
-├── package.json                 # workspaces: ["frontend", "backend", "packages/shared"]
+├── package.json                 # workspaces: ["frontend", "backend"]
 ├── package-lock.json            # single lockfile
-├── turbo.json
 ├── tsconfig.base.json           # an improvement on yanshuf3, which duplicates configs
 ├── docker-compose.yaml          # minio for local dev; the dev database is Supabase
 ├── frontend/
@@ -499,10 +499,6 @@ soundboard/
 │       ├── types/
 │       └── utils/               # secrets.ts, s3.ts, pg.ts, oidc.ts, logger.ts
 ├── local_secrets/               # dev only, gitignored, one JSON file per secret path
-├── packages/shared/
-│   └── frontend/src/
-│       ├── types.ts             # UserSound, SharedSound, BoardSound
-│       └── builtinSounds.ts     # the SOUNDS list
 ├── db/migrations/               # versioned .sql — deliberately unlike yanshuf3
 ├── docs/
 └── scripts/
@@ -510,25 +506,26 @@ soundboard/
 
 ### Why a workspace at all
 
-Two things genuinely have to be shared, and both currently live in the frontend:
-
-- **`SOUNDS`** (`frontend/src/lib/sounds.ts`) — the API needs it for first-login seeding.
-- **`UserSound` / `SharedSound`** (`frontend/src/lib/supabase.ts`) — the API produces these
-  shapes, the frontend consumes them.
-
-Reaching across `frontend/` ↔ `backend/` without a package boundary means either
-duplicating both — and the seeding list will drift silently — or tsconfig and bundler
-hacks. It also enforces the dependency split a single `package.json` cannot: `pg`,
+Not to share code — to enforce the dependency split a single `package.json` cannot: `pg`,
 `@aws-sdk/*` and `jose` never reach the browser bundle, and React never reaches the API.
 
-Follow yanshuf3's `pre*` hook convention so the shared package is always built before
-its consumers:
+**Decision: no `packages/shared`.** It was built, then removed. It existed to hold `SOUNDS`
+so the API could seed a new board and validate an incoming `sound_id`, which is a real
+benefit — but it costs a third package, a build step, and a `pre*` hook on every consumer
+script, to share one array that changes rarely.
 
-```json
-"predev": "npm --prefix .. run build -w @soundboard/shared",
-"prebuild": "npm --prefix .. run build -w @soundboard/shared",
-"pretypecheck": "npm --prefix .. run build -w @soundboard/shared"
-```
+What the API gives up, and how it copes:
+
+- **Seeding.** `GET /api/user-sounds` returns the board and nothing else. The client seeds,
+  exactly as it does on Supabase today: read, and if the board is empty `POST` all 15 pads.
+- **Validating `sound_id`.** The server has no list to check against, so it stores what it
+  is given. A pad naming a sound the client does not know renders silently with no audio.
+  Shape is still validated — `sound_id`, `name`, a hex `color`, `icon`, `gain` in range.
+
+`SOUNDS` therefore lives only in `frontend/src/lib/sounds.ts`, and `POST /api/user-sounds`
+takes an **array** so one route serves both a single add and a 15-pad seed. Revisit the
+shared package if a second consumer of `SOUNDS` appears, or if silent bad `sound_id`s
+actually bite.
 
 **Deliberate divergence: keep versioned migrations in `db/migrations/`.** yanshuf3
 treats its live database as schema truth and snapshots it for reference. Soundboard
@@ -537,15 +534,16 @@ reviewable path.
 
 ### Current state
 
-The workspace split is **done**, and so are the schema and the connection pool.
-`packages/shared` does not exist yet.
+The workspace split, the schema, the pool and the board API are **done**. What remains is
+the OIDC flow and rebuilding uploads on S3. There are two packages, not three — see the
+decision above.
 
 ```
 soundboard/
 ├── package.json                    # workspace root only: workspaces + orchestration scripts
 ├── package-lock.json               # one lockfile
 ├── docker-compose.yaml             # minio only; dev PostgreSQL is Supabase, over pg
-├── db/migrations/                  # 0001_init.sql — the single schema for both environments
+├── db/migrations/                  # 0001_init.sql (fresh) + 0002 (Supabase, in place)
 ├── frontend/                       # @soundboard/frontend
 │   ├── package.json
 │   ├── index.html
@@ -564,15 +562,21 @@ soundboard/
 │   ├── local_secrets/              # gitignored, created by `npm run secrets:example`
 │   ├── scripts/scaffoldLocalSecrets.mjs
 │   └── src/
+│       ├── index.ts                # Express 5 bootstrap, startup probe, graceful shutdown
 │       ├── config/index.ts         # Zod-validated env, exits on anything missing
 │       ├── checkConnectivity.ts    # `npm run api:check`
+│       ├── middleware/
+│       │   └── requireUser.ts      # mock identity under IS_BLACK_ENV; 501 otherwise
+│       ├── routes/
+│       │   └── userSounds.ts       # the five board routes
 │       └── utils/
 │           ├── secrets.ts          # Vault KV v2 + local-file branch + TTL cache
 │           ├── s3.ts               # memoised v3 client, content-addressed keys
 │           ├── pg.ts               # one memoised Pool, SELECT 1 probe, closePool()
+│           ├── httpError.ts        # status + code carrier for the error handler
 │           ├── envCheck.ts         # isBlackEnv()
 │           └── logger.ts           # dependency-free structured logging
-├── supabase/migrations/            # current Supabase schema, still live
+├── supabase/migrations/            # the original Supabase schema, superseded by 0002
 └── docs/  .kiro/  .claude/  .github/  scripts/
 ```
 
@@ -580,20 +584,25 @@ The root `package.json` is no longer a package in its own right. It holds the wo
 the orchestration scripts, and the two dev dependencies both sides share (`typescript`,
 `tsx`) plus the `supabase` CLI and `typescript-eslint`.
 
-Still pending from the target layout: `packages/shared`, for the `SOUNDS` list and the row
-types. It arrives when the backend needs to seed a board — until then there is nothing to
-share and an empty package would be ceremony.
+`packages/shared` was built when the seeding route needed `SOUNDS`, then removed along with
+turbo — the board API now seeds nothing and validates shape rather than membership. `SOUNDS`
+lives in `frontend/src/lib/sounds.ts` only. See "Why a workspace at all" above for the
+tradeoff that was accepted.
 
-`db/migrations/0001_init.sql` holds three tables — `sound_assets`, `shared_sounds`,
-`user_sounds` — and is the single schema for both environments. Nothing applies it
-automatically: it has to be run against the Supabase database for development and against
-the closed-environment PostgreSQL for production, which still needs a migration runner.
+Two migrations, two entry points, one destination:
 
-**Open, and blocking:** the existing Supabase database already has `user_sounds` and
-`shared_sounds` in the old shape (`file_url`, `storage_path`, `gain numeric`, foreign keys
-into `auth.users`). Applying this file there collides. Either it runs in a fresh schema and
-the old tables are migrated across, or the old tables are altered in place into this shape.
-That decision has not been made.
+- **`0001_init.sql`** creates `sound_assets`, `shared_sounds` and `user_sounds` from
+  scratch. This is the closed-environment path.
+- **`0002_user_sounds_to_target_shape.sql`** alters the *existing* Supabase `user_sounds`
+  into the same shape, because that database already holds live rows. It converts the six
+  former uploads into built-in `sound_id`s, drops `custom_file_url`, moves `gain` to
+  `double precision`, changes `user_id` to `text`, and drops the foreign key into
+  `auth.users`.
+
+Neither runs automatically; a migration runner is still missing. `0002` is destructive and
+aborts rather than stranding a pad — see the `DO` block. It also **recreates the RLS policy
+with `auth.uid()::text`**, because the frontend still reads through PostgREST until the data
+hooks move to `/api`, and RLS with no policy denies everything.
 
 ### Scripts
 
@@ -603,6 +612,7 @@ Everything is driven from the root; nothing needs a `cd`.
 | --- | --- |
 | `docker compose up -d` | MinIO on 9010, plus the bucket. No PostgreSQL — that is Supabase |
 | `npm run dev` | Vite dev server on 3000, proxying `/api` and `/auth` to 3001 |
+| `npm run dev:api` | the backend on 3001, `tsx watch` |
 | `npm run build` | frontend production build to `frontend/dist` |
 | `npm run lint` | eslint, frontend |
 | `npm run typecheck` / `typecheck:api` / `typecheck:all` | frontend / backend / both |
@@ -640,12 +650,13 @@ server: {
 ```
 
 Same-origin in dev too, so the COOP/COEP plugin and the audio fetch behave exactly as
-in production. Run the processes in separate terminals or via turbo.
+in production. Run `npm run dev` and `npm run dev:api` in separate terminals.
 
 **Production**: nginx serves the SPA build, and routes `/api` and `/auth` onward —
-following yanshuf3's `frontend/Dockerfile` (`turbo prune` → multi-stage →
-`nginx:stable-alpine`) with immutable caching on `/assets/` and `try_files $uri =404`
-so a missing asset 404s instead of returning `index.html`.
+following yanshuf3's `frontend/Dockerfile` but without its `turbo prune` step: a plain
+multi-stage build from the workspace root into `nginx:stable-alpine`, with immutable caching
+on `/assets/` and `try_files $uri =404` so a missing asset 404s instead of returning
+`index.html`.
 
 **One thing yanshuf3's nginx does not need and ours does:**
 
@@ -668,9 +679,11 @@ Recorded so the reasoning is not re-litigated.
 | auth | own users + bcrypt + sessions | Keycloak OIDC, PKCE in the SPA | Keycloak, **server-side code flow in our backend**, httpOnly cookie |
 | token in browser | n/a | access token in memory | **none** — httpOnly cookies |
 | `getBuffer` auth | n/a | thread a bearer token in | **nothing to do**, cookies are automatic |
+| task runner | n/a | turbo, following yanshuf3 | **none** — npm workspace scripts and `pre*` hooks |
 | identity key | local `app_users.id` | Keycloak `sub` | **`upn` stored directly**; no mirror table |
 | dev database | local PostgreSQL | local PostgreSQL | **Supabase, over `pg`** — one driver, two hosts |
-| layout | add `server/` | `apps/web` + `apps/api` | **`frontend/` + `backend/` + `packages/shared`** |
+| layout | add `server/` | `apps/web` + `apps/api` | **`frontend/` + `backend/`**, no shared package |
+| board seeding | n/a | server-side, from shared `SOUNDS` | **client-side**; the server has no built-in list |
 | login UI | email + password form | sign-in button | **none** — SSO redirect |
 | npm in closed net | "use a mirror" | same | **Nexus**, with `stripLockIntegrity` before `npm ci` |
 | Python needed? | n/a | maybe, for an auth BFF | **no** |

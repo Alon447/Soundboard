@@ -88,8 +88,11 @@ contradiction next to it.
 
 The `frontend/` + `backend/` workspace split has happened, and it invalidated 91 `src/`
 references plus every `fileMatchPattern` and `applyTo` glob in the repo. They were rewritten
-in the same commit. The remaining move — adding `packages/shared/` — will do the same again
-on a smaller scale, so check these four places when it lands.
+in the same commit. `packages/shared/` was then added and removed again within a day, which
+is the cautionary tale: it touched the layout tree in `target-architecture.md`, a
+`fileMatchPattern`, three module tables, the API contract's seeding section and both
+instruction files — twice. Check these four places whenever a package appears or disappears,
+and prefer being sure before adding one.
 
 **Record decisions, not just outcomes.** When a choice is made between real
 alternatives, note what was rejected and why. `docs/backend-portability.md` is the
