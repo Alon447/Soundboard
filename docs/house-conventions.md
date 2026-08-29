@@ -350,8 +350,10 @@ stages dependencies for transfer. The internal CA is installed in the Dockerfile
 `update-ca-certificates`, with an internal pip mirror via `PIP_CONFIG_FILE`.
 
 Both repos also generate their agent instructions from a canonical source with a `--check`
-in CI — yanshuf3's `scripts/sync-ai-instructions.mjs`. Soundboard's
-`scripts/sync-agent-docs.mjs` is the same idea.
+in CI — yanshuf3's `scripts/sync-ai-instructions.mjs`. Soundboard had the same idea in
+`scripts/sync-agent-docs.mjs`, removed along with Claude Code support; its two remaining
+instruction sets (`.kiro/`, `.github/`) are hand-kept in agreement. Worth restoring the
+pattern if a third is ever added.
 
 ## Combined do-not-copy list
 

@@ -69,8 +69,10 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    contained port into a rewrite. On the server side the mirror rule holds: SQL lives
    in `backend/src/routes/`, and every mutation is scoped by the caller's id.
 
-9. **Keep the `{ data, error }` return shape** for anything replacing a supabase-js
-   call, and keep the `useAuth` context shape (`user.id`, `user.email`,
+9. **`frontend/src/lib/api.ts` throws; it does not return `{ data, error }`.** react-query
+   turns a throw into `error` state on its own, so the wrapper only got unwrapped and
+   rethrown at every call site. What *must* stay stable is the **`useUserSounds` return
+   object** and the `useAuth` context shape (`user.id`, `user.email`,
    `user.user_metadata.name`, `session`, `loading`, `signOut`). Preserve those and
    `App.tsx` needs no changes at all.
 

@@ -37,31 +37,36 @@ browser OIDC library. There is no signup or password endpoint to build; `/auth/l
 did implicitly is map the Keycloak `upn` claim onto the existing Supabase user id; see
 [`target-architecture.md`](./target-architecture.md).
 
-## Database — 7 calls, 1 table
+## Database — 0 calls, done
 
-All in `frontend/src/lib/useUserSounds.ts`. The replacement route exists for every one of
-them; what remains is pointing the hook at `/api` instead of PostgREST.
+`frontend/src/lib/useUserSounds.ts` goes through `frontend/src/lib/api.ts` now. What each
+former call became:
 
-| Purpose | Call | Replaced by |
+| Purpose | Was | Now |
 | --- | --- | --- |
-| load board | `.from('user_sounds').select('*, shared_sound:shared_sounds(*)').eq('user_id', userId).order('position', { ascending: true })` | `GET /api/user-sounds` |
-| seed first login | `.from('user_sounds').insert(seededRows).select('*')` — all 15 `SOUNDS`, `position = index` | same `GET`, in its transaction |
-| add built-in | `.from('user_sounds').insert({ user_id, sound_id, ... , position })` | `POST /api/user-sounds` |
-| remove pad | `.from('user_sounds').delete().eq('id', dbId)` — **no `user_id` filter** | `DELETE /api/user-sounds/:id` |
-| move pad | two parallel `.from('user_sounds').update({ position }).eq('id', ...)` — **not transactional** | `POST /api/user-sounds/reorder` |
+| load board | `.from('user_sounds').select('*, shared_sound:shared_sounds(*)').eq('user_id', userId).order('position')` | `GET /api/user-sounds` |
+| seed first login | `.from('user_sounds').insert(seededRows).select('*')` | `POST /api/user-sounds` with all 15 pads, sent by the client |
+| add built-in | `.from('user_sounds').insert({ ... })` | `POST /api/user-sounds` with a one-element array |
+| remove pad | `.from('user_sounds').delete().eq('id', dbId)` — no `user_id` filter | `DELETE /api/user-sounds/:id`, scoped server-side |
+| move pad | two parallel `.update({ position })` — not transactional | `POST /api/user-sounds/reorder`, one statement |
 | set gain | `.from('user_sounds').update({ gain }).eq('id', dbId)` | `PATCH /api/user-sounds/:id` |
 
-The embedded join `shared_sound:shared_sounds(*)` survives only as a fallback so pads stay
-audible until `db/migrations/0002` runs; after that no row has a `shared_sound_id` and the
-join returns nothing. The API does not implement it.
+The embedded join `shared_sound:shared_sounds(*)` is gone and the API does not implement it,
+so **a pad still pointing at `shared_sound_id` has no audio.** Running `db/migrations/0002`
+converts those pads to built-in `sound_id`s; until it runs, the six former uploads are silent.
 
-Every call is wrapped in react-query. Remove / move / gain are optimistic with
-rollback. Only the `{ data, error }` return shape leaks into the hooks, so a
-`fetch`-based client with the same shape is a drop-in replacement.
+Every call was wrapped in react-query, which is what made the swap cheap: the optimistic
+remove / move / gain logic is untouched, only the mutation bodies changed. `api.ts` throws
+rather than returning `{ data, error }`, because react-query converts a throw into `error`
+state by itself.
 
-**Gone since this inventory was written:** the two `shared_sounds` inserts, the
-add-from-library insert and the community-library query. Uploads are parked and the
-community library was deleted — both return in phase 6 against S3.
+Two behaviour changes came free with the routes: `moveSound` is now one transactional
+reorder instead of two racing `UPDATE`s, and every mutation is scoped by `user_id`
+server-side rather than relying on RLS.
+
+**Also gone:** the two `shared_sounds` inserts, the add-from-library insert and the
+community-library query. Uploads are parked and the community library was deleted — both
+return in phase 6 against S3.
 
 ## Storage — 0 calls, done
 
@@ -117,9 +122,10 @@ primary keys** — notably none on `user_sounds.user_id`.
 - `frontend/vite.config.ts` has nothing Supabase-specific, but does set COOP/COEP for
   ffmpeg.wasm and excludes `@ffmpeg/*` from `optimizeDeps`.
 - Dependencies to drop at the end: `@supabase/supabase-js`, and the `supabase` CLI dev
-  dependency. **Nothing is added on the web side** — the cookie session means no OIDC
-  client library in the browser. The backend gains `pg`, `@aws-sdk/client-s3`, `jose`,
-  `openid-client`, `zod` and an HTTP framework,
+  dependency. On the web side only **`axios`** is added, for `frontend/src/lib/api.ts` —
+  still no OIDC client library, because the cookie session removes the need for one. The
+  backend has gained `pg`, `express`, `zod` and `@aws-sdk/client-s3`, with `jose` and
+  `openid-client` still to come,
   which is the argument for the workspace split in
   [`target-architecture.md`](./target-architecture.md): server dependencies must not
   leak into the browser bundle.

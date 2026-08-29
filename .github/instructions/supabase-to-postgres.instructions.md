@@ -18,8 +18,7 @@ our own backend — no auth sidecar, no vault microservice, no Python.
 Analysis and rejected options:
 `docs/backend-portability.md`. Call-site checklist:
 `docs/supabase-surface-inventory.md`. Target schema, API contract and migration
-runbook: `.kiro/skills/supabase-to-postgres/references/` (mirrored under
-`.claude/skills/`).
+runbook: `.kiro/skills/supabase-to-postgres/references/`.
 
 ## State this before proposing anything
 
@@ -40,9 +39,12 @@ The `backend/` workspace exists with the infrastructure layers done:
   put/get/head/delete
 - `backend/src/utils/pg.ts` — `getPool()` one memoised `Pool` on the write port, `SELECT 1`
   probe, `closePool()`
-- `backend/src/index.ts` — Express 5 app, startup probe, error handler, SIGTERM shutdown
+- `backend/src/index.ts` — lifecycle only; `app.ts` assembles the Express app
+- `backend/src/types/index.ts` — `AuthUser` + the single `Request` augmentation
+- `backend/src/routes/index.ts` — mounts `/me` and `/user-sounds`, `requireUser` per mount
 - `backend/src/middleware/requireUser.ts` — `req.user` from `MOCK_USER_ID` under
   `IS_BLACK_ENV`, 501 otherwise. It grants no privileges.
+- `backend/src/middleware/errorHandler.ts` — `notFound` + the handler; never leaks `pg` text
 - `backend/src/routes/userSounds.ts` — the five board routes, every one caller-scoped
 - **No `packages/shared` and no turbo** — both were built and removed. `SOUNDS` stays in
   `frontend/src/lib/sounds.ts`, the API neither seeds nor validates `sound_id`, and `POST
@@ -98,7 +100,8 @@ fallback values for things the architecture guarantees.
 8. **Keep backend access behind the two hooks.** `useUserSounds` and
    `useSharedSounds` are the only things that talk to the backend. Do not scatter
    queries into components — that turns a contained port into a rewrite.
-9. **Keep these shapes stable**: the `{ data, error }` return contract, the `useAuth`
+9. **Keep these shapes stable** (note `api.ts` **throws**, it does not return
+   `{ data, error }` — react-query handles the throw): the `useAuth`
    context (`user.id`, `user.email`, `user.user_metadata.name`, `session`, `loading`,
    `signOut`), the `useUserSounds` return object, and `BoardSound.audio_path` as a
    plain fetchable Web-Audio-decodable URL. Map OIDC claims onto `user`
@@ -140,9 +143,8 @@ No big-bang cutover.
 1. **Capture** the rows *and* download every `file_url` while Supabase is still
    reachable — those signed URLs are the only handle on the bytes. Export user emails
    too; the identity mapping needs them.
-2. **Seam**: add `frontend/src/lib/api.ts` over supabase-js returning the same
-   `{ data, error }` shape. Derive `audio_path` from the shared-sound id. Key the
-   buffer cache on the sound id. Ship on Supabase first.
+2. ~~**Seam**~~ — **done.** `frontend/src/lib/api.ts` calls `/api/*` directly and throws;
+   react-query handles the throw. Still outstanding: key the buffer cache on the sound id.
 3. ~~**Restructure**~~ — **done.** `frontend/` and `backend/` are npm workspaces; the root
    `package.json` is orchestration only. `packages/shared` is deferred.
 4. **Backend**: migrations with no `auth.`/`storage.` references, the Node API, the secrets
@@ -168,7 +170,7 @@ internal CA certificate lives.
 
 ## Verify
 
-`npm run build`, `npm run typecheck`, and `npm run docs:check` if you touched skills.
+`npm run build` and `npm run typecheck:all`.
 
 End to end after the flip: sign in via Keycloak, first-login seeding produces 9 pads,
 upload a `.mov`, play a built-in and an uploaded pad, press a pad twice and confirm

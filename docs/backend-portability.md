@@ -64,9 +64,9 @@ All of it lands in **one Node process**. The sibling projects split auth into a 
 in yanshuf3's case, secrets into another service; Soundboard does neither. See
 [`house-conventions.md`](./house-conventions.md).
 
-Only four source files talk to Supabase, which is the good news:
-`frontend/src/lib/supabase.ts`, `frontend/src/lib/useAuth.tsx`, `frontend/src/components/AuthPage.tsx`
-and `frontend/src/lib/useUserSounds.ts` — 12 calls left, 7 data and 5 auth. See
+Three source files still talk to Supabase, and all of it is auth:
+`frontend/src/lib/supabase.ts` (the client), `frontend/src/lib/useAuth.tsx` and
+`frontend/src/components/AuthPage.tsx` — **5 calls left, 0 data.** See
 [`supabase-surface-inventory.md`](./supabase-surface-inventory.md) for the exact
 call sites.
 
@@ -357,10 +357,12 @@ Export `auth.users` (id, email, `raw_user_meta_data` — the password hashes are
 longer needed), `user_sounds` and `shared_sounds` to JSON. Then download every
 `shared_sounds.file_url` and verify byte counts. Nothing here is recoverable later.
 
-**Phase 1 — introduce a seam, no behaviour change.**
-Add `frontend/src/lib/api.ts` exposing the operations the hooks need, implemented on top of
-supabase-js and returning the existing `{ data, error }` shape. Move the
-`UserSound` / `SharedSound` types out of `supabase.ts` into `frontend/src/lib/types.ts`.
+**Phase 1 — introduce a seam. Done, but not as planned.**
+The plan was `frontend/src/lib/api.ts` over supabase-js first, keeping `{ data, error }`, so
+the swap could ship with no behaviour change. In the event the backend landed first, so
+`api.ts` was written straight over `fetch('/api/...')` and **throws** instead — react-query
+converts a throw into `error` state, making the wrapper pure ceremony. The row type moved
+from `supabase.ts` into `useUserSounds.ts` rather than a separate `types.ts`.
 Switch `userSoundToBoard` to derive `audio_path` from the shared-sound id rather
 than reading `file_url`, and key the decoded-buffer cache in `App.tsx` on the sound
 id instead of the URL. Ship and confirm on Supabase.

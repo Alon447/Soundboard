@@ -6,7 +6,7 @@ inclusion: always
 
 React 19 + Vite 8 soundboard. HeroUI 3 + Tailwind 4, `lucide-react` icons,
 `@tanstack/react-query` for server state, `zustand` for UI state and audio refs.
-Backend is currently Supabase (GoTrue auth, PostgREST, Storage), mid-migration.
+The board runs on our own Express API over PostgreSQL; Supabase is down to GoTrue auth only.
 Import with the `@/` alias, not deep relative paths. One React component per file.
 
 Validate app changes with `npm run build` and `npm run typecheck`.
@@ -39,6 +39,13 @@ No abstraction for a single call site, and no file that exists only to re-export
 **Existing verbosity is not a precedent.** When editing an over-commented or over-built
 file, trim rather than match it.
 
+**Reach for the simplest thing that works, and justify each line.** Before adding a
+dependency, an abstraction, a config knob or a file, say what breaks without it. If the
+answer is "nothing yet", do not add it. A new dependency also has to be mirrored into Nexus
+for the closed environment, so "it is only a small package" is not free. When the user asks
+for something heavier than the situation needs, build it — but say once, briefly, what the
+simpler option was.
+
 **Keep chat replies short.** Lead with the answer. Add background, alternatives and
 caveats only when asked, or when a decision genuinely turns on them.
 
@@ -46,9 +53,9 @@ caveats only when asked, or when a decision genuinely turns on them.
 
 Any change to architecture, the data or auth layer, schema, storage, dependencies,
 folder structure, build scripts or deployment config **must update the documentation
-in the same turn**. The `docs-sync` skill holds the concern-to-file map. Run
-`npm run docs:check` before finishing. Never hand-edit `.claude/skills/` — it is
-generated from `.kiro/skills/` by `npm run docs:sync`.
+in the same turn**. The `docs-sync` skill holds the concern-to-file map. Kiro steering and
+the Copilot instructions in `.github/` must agree — there is no generated mirror and nothing
+checks them, so a rule updated in one place and not the other just silently diverges.
 
 This matters more than usual here because the project is mid-migration; a stale
 architecture doc sends the next reader down a path that no longer exists.

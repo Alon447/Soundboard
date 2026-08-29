@@ -150,10 +150,15 @@ these — extend them:
 | `db/migrations/0001_init.sql` | the three tables, from `references/target-schema.sql` |
 | `docker-compose.yaml` | MinIO only. Dev PostgreSQL **is** Supabase, over `pg` with TLS unverified |
 
-| `backend/src/index.ts` | Express 5 app, startup pool probe, error handler, SIGTERM shutdown |
+| `backend/src/index.ts` | Lifecycle only: startup pool probe, listen, SIGTERM shutdown |
+| `backend/src/app.ts` | Express assembly: JSON, `/api` router, 404, error handler |
+| `backend/src/types/index.ts` | `AuthUser` + the single `Request` augmentation. Do not add a second |
+| `backend/src/routes/index.ts` | Mounts `/me` and `/user-sounds`, `requireUser` per mount |
 | `backend/src/middleware/requireUser.ts` | `req.user` from `MOCK_USER_ID` under `IS_BLACK_ENV`; 501 otherwise |
+| `backend/src/middleware/errorHandler.ts` | `notFound` + the handler; never leaks `pg` text |
 | `backend/src/routes/userSounds.ts` | `GET`/`POST`/`PATCH`/`DELETE` + `POST /reorder`, all caller-scoped |
 | `backend/src/utils/httpError.ts` | `httpError(status, code, message)` for the error handler |
+| `frontend/src/lib/api.ts` | axios instance, `baseURL: '/api'`, `withCredentials`, error interceptor **throws** |
 
 
 Still to come: the OIDC routes and the S3 upload path.
@@ -176,12 +181,12 @@ Each phase builds and typechecks on its own. No big-bang cutover.
    still reachable. Those signed URLs are the only handle on the bytes. Export
    `auth.users` emails too: the identity mapping needs them. See
    `references/data-migration.md`.
-2. **Seam** — add `frontend/src/lib/api.ts` with the operations the hooks need, still over
-   supabase-js, returning the existing `{ data, error }` shape. Move `UserSound` /
-   `SharedSound` into `frontend/src/lib/types.ts`. Derive `audio_path` from the shared-sound
-   id. Key the decoded-buffer cache in `App.tsx` on the sound id rather than the URL
-   — cheap now, awkward later, and it keeps presigned URLs available as an option.
-   Ship on Supabase and confirm no regression.
+2. ~~**Seam**~~ — **done**, though the backend landed first so it was never a
+   supabase-js-backed seam. `frontend/src/lib/api.ts` goes straight to `/api/*` and
+   **throws**; react-query turns that into `error` state, so `{ data, error }` was dropped.
+   The row type lives in `useUserSounds.ts`. Still outstanding from this step: key the
+   decoded-buffer cache in `App.tsx` on the sound id rather than the URL — cheap now,
+   awkward later, and it keeps presigned URLs available as an option.
 3. ~~**Restructure**~~ — **done.** `frontend/` and `backend/` are npm workspaces; the root
    `package.json` is orchestration only. **No `packages/shared` and no turbo** — both were
    tried and removed. `SOUNDS` stays in the frontend and the client seeds its own board.
@@ -273,8 +278,7 @@ Ask rather than assume:
 
 ## Verify
 
-`npm run build` and `npm run typecheck` after any app change, and
-`npm run docs:check` if you touched the skills.
+`npm run build` and `npm run typecheck:all` after any app change.
 
 End to end, after the flip: sign in via Keycloak, first-login seeding produces 9 pads,
 upload a `.mov` (exercises ffmpeg, S3 write, and serve), play a built-in and an uploaded

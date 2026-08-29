@@ -4,8 +4,8 @@
 
 React 19 + Vite 8 soundboard. HeroUI 3 + Tailwind 4, `lucide-react` icons,
 `@tanstack/react-query` for server state, `zustand` for UI state and audio refs,
-ffmpeg.wasm for in-browser video → MP3 conversion. Backend is currently Supabase and
-is being migrated to a closed-environment stack.
+ffmpeg.wasm for in-browser video → MP3 conversion. The board runs on our own Express API
+over PostgreSQL; Supabase is down to GoTrue auth only, and that is being migrated too.
 
 Deeper context, read these before proposing backend changes:
 
@@ -23,12 +23,12 @@ Deeper context, read these before proposing backend changes:
 Any change to architecture, the data or auth layer, schema, storage, dependencies,
 folder structure, build scripts or deployment config must update the documentation in
 the same change. The mapping of concern to file is in
-`.kiro/skills/docs-sync/SKILL.md`. Run `npm run docs:check` before finishing.
+`.kiro/skills/docs-sync/SKILL.md`.
 
-Kiro, Claude Code and Copilot must not disagree — a rule that applies to the project
-applies in all three, so `.kiro/steering/`, `CLAUDE.md` and this file get updated
-together. When a decision is superseded, rewrite the rule rather than appending a
-contradiction next to it.
+Kiro and Copilot must not disagree — a rule that applies to the project applies in both, so
+`.kiro/steering/` and this file get updated together. Nothing verifies that automatically
+any more, so it is on whoever makes the change. When a decision is superseded, rewrite the
+rule rather than appending a contradiction next to it.
 
 ## Repository shape and commands
 
@@ -46,7 +46,6 @@ npm run typecheck:all   # frontend + backend
 npm run api:check       # backend self-check: secrets + PostgreSQL + S3 round trip
 npm run secrets:example # create backend/local_secrets/ and backend/.env from templates
 npm run build:api       # compile backend
-npm run docs:check      # verify the .claude/skills mirror
 ```
 
 Secrets in development: `IS_BLACK_ENV=true` makes `getSecret(name)` read
@@ -118,6 +117,11 @@ No abstraction for a single call site, and no file that exists only to re-export
 **Existing verbosity is not a precedent.** When editing an over-commented or over-built
 file, trim rather than match it.
 
+**Reach for the simplest thing that works, and justify each line.** Before adding a
+dependency, an abstraction, a config knob or a file, say what breaks without it. If the
+answer is "nothing yet", do not add it. A new dependency also has to be mirrored into Nexus
+for the closed environment, so "it is only a small package" is not free.
+
 **Keep chat replies short.** Lead with the answer. Add background, alternatives and
 caveats only when asked, or when a decision genuinely turns on them.
 
@@ -174,8 +178,11 @@ wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
   `node-postgres`. `gain` is `numeric`.
 - The AWS SDK's default credential chain probes EC2 instance metadata, which hangs
   rather than fails in a closed network. Pass credentials explicitly.
-- `moveSound` uses two racing `UPDATE`s instead of one transaction. Fixed in
-  `POST /api/user-sounds/reorder`, but the hook still calls Supabase.
+- ~~`moveSound` uses two racing `UPDATE`s~~ — fixed; the hook calls
+  `POST /api/user-sounds/reorder`.
+- The board is scoped by the backend's `MOCK_USER_ID`, not the signed-in Supabase user,
+  until Keycloak lands. A pad still on `shared_sound_id` has no audio until
+  `db/migrations/0002` runs.
 - Nothing deletes an upload's bytes or its `shared_sounds` row, and there is no
   client-side size limit. Both are phase-6 work, and uploads are parked meanwhile.
 - ~~`YouTubeSoundPanel.tsx` and `YOUTUBE_SERVER` are dead code~~ — both deleted.

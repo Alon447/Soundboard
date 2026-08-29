@@ -219,10 +219,28 @@ route to a `302` — but key the buffer cache on the sound id first.
 
 ## Response shape
 
-Keep `{ data, error }` so the react-query hooks need no restructuring:
+**As built, `api.ts` throws** — react-query catches it into `error` state, so a
+`{ data, error }` wrapper would only be unwrapped and rethrown at all six call sites. The
+server still *sends* `{ error: { code, message } }`; the client turns that into an `Error`.
+
+Built on **axios**, not `fetch`. A single response interceptor unwraps the server's error
+envelope, so no call site sees an axios error:
 
 ```ts
-// frontend/src/lib/api.ts
+// frontend/src/lib/api.ts — as built
+const client = axios.create({ baseURL: '/api', withCredentials: true });
+client.interceptors.response.use(undefined, (error) => {
+  throw new Error(error.response?.data?.error?.message ?? error.message);
+});
+export const api = { get, post, patch, remove };   // each returns response.data
+```
+
+`withCredentials` is what carries the httpOnly session cookie. The interceptor is also where
+a 401 → `/auth/login` redirect belongs when Keycloak lands.
+
+The original design, kept for the reasoning about why the hooks need no restructuring:
+
+```ts
 type Result<T> = { data: T | null; error: { message: string } | null };
 
 async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> {

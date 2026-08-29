@@ -18,9 +18,7 @@
 		"typecheck:api": "npm run typecheck -w @soundboard/backend",
 		"typecheck:all": "npm run typecheck && npm run typecheck:api",
 		"api:check": "npm run check:connectivity -w @soundboard/backend",
-		"secrets:example": "npm run secrets:example -w @soundboard/backend",
-		"docs:sync": "node scripts/sync-agent-docs.mjs",
-		"docs:check": "node scripts/sync-agent-docs.mjs --check"
+		"secrets:example": "npm run secrets:example -w @soundboard/backend"
 	},
 	"devDependencies": {
 		"supabase": "^2.114.0",

@@ -1,7 +1,20 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase, type UserSound } from './supabase';
+import { api } from './api';
 import { SOUNDS } from './sounds';
 import { useAuth } from './useAuth';
+
+export type UserSound = {
+	id: string;
+	user_id: string;
+	sound_id: string | null;
+	shared_sound_id: string | null;
+	name: string;
+	color: string;
+	icon: string;
+	gain: number;
+	position: number;
+	created_at: string;
+};
 
 export type BoardSound = {
 	dbId: string;
@@ -25,9 +38,9 @@ function userSoundToBoard(row: UserSound): BoardSound {
 		dbId: row.id,
 		id: row.sound_id ?? row.id,
 		name: row.name,
-		// The two legacy fallbacks keep pre-migration pads audible; db/migrations/0002
-		// converts them to built-in sound_ids, after which only the first branch is hit.
-		audio_path: builtin?.audio_path ?? row.shared_sound?.file_url ?? row.custom_file_url ?? '',
+		// Empty for a pad still pointing at shared_sounds, which means db/migrations/0002
+		// has not run: the API serves no audio URL and the pad is silent.
+		audio_path: builtin?.audio_path ?? '',
 		image_path: builtin?.image_path ?? null,
 		icon: row.icon,
 		color: row.color,
@@ -36,32 +49,22 @@ function userSoundToBoard(row: UserSound): BoardSound {
 	};
 }
 
-async function fetchUserSounds(userId: string): Promise<BoardSound[]> {
-	const { data, error } = await supabase
-		.from('user_sounds')
-		.select('*, shared_sound:shared_sounds(*)')
-		.eq('user_id', userId)
-		.order('position', { ascending: true });
-
-	if (error) throw new Error(error.message);
-
-	const rows = data as UserSound[];
-	if (rows.length > 0) return rows.map(userSoundToBoard);
-
-	const seededRows = SOUNDS.map((sound, index) => ({
-		user_id: userId,
+const seedPads = () =>
+	SOUNDS.map((sound) => ({
 		sound_id: sound.id,
 		name: sound.name,
 		color: sound.color ?? '#f97316',
 		icon: sound.icon ?? 'Volume2',
 		gain: sound.gain ?? 1,
-		position: index,
 	}));
 
-	const { data: inserted, error: insertError } = await supabase.from('user_sounds').insert(seededRows).select('*');
+async function loadBoard(): Promise<BoardSound[]> {
+	const rows = await api.get<UserSound[]>('/user-sounds');
 
-	if (insertError) throw new Error(insertError.message);
-	return (inserted as UserSound[]).map(userSoundToBoard);
+	// The API has no built-in list, so it cannot seed. A first-time board is posted whole.
+	const board = rows.length > 0 ? rows : await api.post<UserSound[]>('/user-sounds', seedPads());
+
+	return board.map(userSoundToBoard);
 }
 
 export function useUserSounds() {
@@ -74,48 +77,51 @@ export function useUserSounds() {
 		error: queryError,
 	} = useQuery({
 		queryKey: soundKeys.all(user?.id ?? ''),
-		queryFn: () => fetchUserSounds(user!.id),
+		queryFn: loadBoard,
 		enabled: Boolean(user),
 	});
 
 	const error = queryError ? (queryError as Error).message : null;
 
-	const invalidate = () => qc.invalidateQueries({ queryKey: soundKeys.all(user?.id ?? '') });
+	const key = soundKeys.all(user?.id ?? '');
+	const invalidate = () => qc.invalidateQueries({ queryKey: key });
+
+	/** Snapshot the board so an optimistic mutation can roll back. */
+	const snapshot = async () => {
+		await qc.cancelQueries({ queryKey: key });
+		return { previous: qc.getQueryData<BoardSound[]>(key) };
+	};
+
+	const rollback = (ctx: { previous?: BoardSound[] } | undefined) => {
+		if (ctx?.previous) qc.setQueryData(key, ctx.previous);
+	};
 
 	const addBuiltinMutation = useMutation({
 		mutationFn: async (soundId: string) => {
-			if (!user) throw new Error('Not authenticated');
 			const builtin = SOUNDS.find((s) => s.id === soundId);
 			if (!builtin) throw new Error(`Unknown sound: ${soundId}`);
 
-			const { error } = await supabase.from('user_sounds').insert({
-				user_id: user.id,
-				sound_id: soundId,
-				name: builtin.name,
-				color: builtin.color ?? '#f97316',
-				icon: builtin.icon ?? 'Volume2',
-				gain: builtin.gain ?? 1,
-				position: sounds.length,
-			});
-			if (error) throw new Error(error.message);
+			await api.post('/user-sounds', [
+				{
+					sound_id: builtin.id,
+					name: builtin.name,
+					color: builtin.color ?? '#f97316',
+					icon: builtin.icon ?? 'Volume2',
+					gain: builtin.gain ?? 1,
+				},
+			]);
 		},
 		onSuccess: invalidate,
 	});
 
 	const removeMutation = useMutation({
-		mutationFn: async (dbId: string) => {
-			const { error } = await supabase.from('user_sounds').delete().eq('id', dbId);
-			if (error) throw new Error(error.message);
-		},
+		mutationFn: (dbId: string) => api.remove(`/user-sounds/${dbId}`),
 		onMutate: async (dbId) => {
-			await qc.cancelQueries({ queryKey: soundKeys.all(user?.id ?? '') });
-			const previous = qc.getQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''));
-			qc.setQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''), (old = []) => old.filter((s) => s.dbId !== dbId));
-			return { previous };
+			const ctx = await snapshot();
+			qc.setQueryData<BoardSound[]>(key, (old = []) => old.filter((s) => s.dbId !== dbId));
+			return ctx;
 		},
-		onError: (_err, _dbId, ctx) => {
-			if (ctx?.previous) qc.setQueryData(soundKeys.all(user?.id ?? ''), ctx.previous);
-		},
+		onError: (_err, _dbId, ctx) => rollback(ctx),
 		onSettled: invalidate,
 	});
 
@@ -125,19 +131,15 @@ export function useUserSounds() {
 			const swapIndex = direction === 'left' ? index - 1 : index + 1;
 			if (swapIndex < 0 || swapIndex >= sounds.length) return;
 
-			const a = sounds[index];
-			const b = sounds[swapIndex];
-
-			await Promise.all([
-				supabase.from('user_sounds').update({ position: b.position }).eq('id', a.dbId),
-				supabase.from('user_sounds').update({ position: a.position }).eq('id', b.dbId),
-			]);
+			// One transactional reorder, replacing the two racing UPDATEs this used to do.
+			const order = sounds.map((s) => s.dbId);
+			[order[index], order[swapIndex]] = [order[swapIndex], order[index]];
+			await api.post('/user-sounds/reorder', { order });
 		},
 		onMutate: async ({ dbId, direction }) => {
-			await qc.cancelQueries({ queryKey: soundKeys.all(user?.id ?? '') });
-			const previous = qc.getQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''));
+			const ctx = await snapshot();
 
-			qc.setQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''), (old = []) => {
+			qc.setQueryData<BoardSound[]>(key, (old = []) => {
 				const next = [...old];
 				const index = next.findIndex((s) => s.dbId === dbId);
 				const swapIndex = direction === 'left' ? index - 1 : index + 1;
@@ -149,28 +151,23 @@ export function useUserSounds() {
 				return next;
 			});
 
-			return { previous };
+			return ctx;
 		},
-		onError: (_err, _vars, ctx) => {
-			if (ctx?.previous) qc.setQueryData(soundKeys.all(user?.id ?? ''), ctx.previous);
-		},
+		onError: (_err, _vars, ctx) => rollback(ctx),
 		onSettled: invalidate,
 	});
 
 	const updateGainMutation = useMutation({
-		mutationFn: async ({ dbId, gain }: { dbId: string; gain: number }) => {
-			const { error } = await supabase.from('user_sounds').update({ gain }).eq('id', dbId);
-			if (error) throw new Error(error.message);
-		},
+		mutationFn: ({ dbId, gain }: { dbId: string; gain: number }) =>
+			api.patch(`/user-sounds/${dbId}`, { gain }),
 		onMutate: async ({ dbId, gain }) => {
-			await qc.cancelQueries({ queryKey: soundKeys.all(user?.id ?? '') });
-			const previous = qc.getQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''));
-			qc.setQueryData<BoardSound[]>(soundKeys.all(user?.id ?? ''), (old = []) => old.map((s) => (s.dbId === dbId ? { ...s, gain } : s)));
-			return { previous };
+			const ctx = await snapshot();
+			qc.setQueryData<BoardSound[]>(key, (old = []) =>
+				old.map((s) => (s.dbId === dbId ? { ...s, gain } : s)),
+			);
+			return ctx;
 		},
-		onError: (_err, _vars, ctx) => {
-			if (ctx?.previous) qc.setQueryData(soundKeys.all(user?.id ?? ''), ctx.previous);
-		},
+		onError: (_err, _vars, ctx) => rollback(ctx),
 	});
 
 	return {
@@ -187,10 +184,9 @@ export function useUserSounds() {
 
 		removeSound: (dbId: string) => removeMutation.mutate(dbId),
 
-		moveSound: (dbId: string, direction: 'left' | 'right') => moveMutation.mutate({ dbId, direction }),
+		moveSound: (dbId: string, direction: 'left' | 'right') =>
+			moveMutation.mutate({ dbId, direction }),
 
 		updateGain: (dbId: string, gain: number) => updateGainMutation.mutate({ dbId, gain }),
-
-		refetch: () => invalidate(),
 	};
 }

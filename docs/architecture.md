@@ -86,18 +86,24 @@ dev and preview servers only — a production host must set them itself.
 
 ## Data layer
 
-One hook, react-query, is the *only* thing that talks to the database:
-`frontend/src/lib/useUserSounds.ts` — the board. One query plus four mutations (add
-built-in, remove, move, update gain), the last three optimistic. `addCustomSound` still
-exists but throws: uploads are parked until the S3 route lands.
+One hook, react-query, is the *only* thing that reads or writes the board:
+`frontend/src/lib/useUserSounds.ts` — one query plus four mutations (add built-in, remove,
+move, update gain), the last three optimistic with rollback. `addCustomSound` still exists
+but throws: uploads are parked until the S3 route lands.
 
-`frontend/src/lib/supabase.ts` holds the client plus the `UserSound` type. It keeps two
-legacy read-only fields, `custom_file_url` and `shared_sound.file_url`, purely so pads stay
-audible until `db/migrations/0002` runs.
+**It goes through our own API, not Supabase.** `frontend/src/lib/api.ts` is a thin `fetch`
+wrapper over `/api/*` with `credentials: 'same-origin'`; `backend/src/routes/userSounds.ts`
+serves it over `pg`. `api.ts` throws rather than returning `{ data, error }`, because
+react-query already turns a throw into `error` state.
 
-**The replacement already exists.** `backend/src/routes/userSounds.ts` serves the same five
-operations over `pg`; the hook has not been pointed at it yet. That swap is the next step,
-and it is what removes the last data-layer Supabase call.
+`frontend/src/lib/supabase.ts` is now the auth client and nothing else. The `UserSound` row
+type lives in `useUserSounds.ts`, next to the mapper that consumes it.
+
+**Two things to know during the transition.** The board is scoped by the backend's
+`MOCK_USER_ID`, not by whoever is signed in through Supabase — `useAuth`'s `user.id` only
+keys the react-query cache now. And a pad still pointing at `shared_sound_id` has no
+`audio_path`, because the API serves no URL for one; `db/migrations/0002` is what converts
+those pads. Both resolve as phases 5 and 2 complete.
 
 No realtime subscriptions, no RPC, no edge functions.
 
@@ -110,16 +116,21 @@ No realtime subscriptions, no RPC, no edge functions.
 | `backend/src/utils/pg.ts` | One memoised `pg.Pool`, startup probe, `closePool()` |
 | `backend/src/config/index.ts` | Zod-validated env, exits at boot on anything missing |
 | `backend/src/checkConnectivity.ts` | `npm run api:check` — four checks: secrets, PostgreSQL, S3 |
-| `backend/src/index.ts` | Express 5 bootstrap, startup probe, error handler, shutdown |
+| `backend/src/index.ts` | Lifecycle only: startup probe, listen, graceful shutdown |
+| `backend/src/app.ts` | Express assembly: JSON, `/api` router, 404, error handler |
+| `backend/src/types/index.ts` | `AuthUser` and the only `Request` augmentation |
 | `backend/src/middleware/requireUser.ts` | Identity; `MOCK_USER_ID` under `IS_BLACK_ENV` |
+| `backend/src/middleware/errorHandler.ts` | `notFound` + the handler that hides driver text |
+| `backend/src/routes/index.ts` | Mounts `/me` and `/user-sounds` behind `requireUser` |
 | `backend/src/routes/userSounds.ts` | The five board routes, all scoped to the caller |
 | `db/migrations/0001_init.sql` | Fresh-database schema: `sound_assets`, `shared_sounds`, `user_sounds` |
 | `db/migrations/0002_*.sql` | In-place migration of the live Supabase `user_sounds` |
 | `docker-compose.yaml` | MinIO only; the dev database is Supabase, reached over `pg` |
 
 | `frontend/src/App.tsx` | Layout, keybindings, audio engine, auth guard |
-| `frontend/src/lib/useUserSounds.ts` | Every board read/write; audio path resolution |
-| `frontend/src/lib/supabase.ts` | Client + the `UserSound` type |
+| `frontend/src/lib/useUserSounds.ts` | Every board read/write, over `/api`; audio path resolution |
+| `frontend/src/lib/api.ts` | axios instance for `/api/*`; one interceptor normalises errors |
+| `frontend/src/lib/supabase.ts` | Auth client only, until Keycloak lands |
 | `frontend/src/lib/useAuth.tsx` | Session context (`getSession`, `onAuthStateChange`, `signOut`) |
 | `frontend/src/components/AuthPage.tsx` | Only auth UI; email + password |
 | `frontend/src/lib/sounds.ts` | `SOUNDS` — the 15 built-ins. The only copy; the API has none |
@@ -129,20 +140,18 @@ No realtime subscriptions, no RPC, no edge functions.
 
 ## Known rough edges
 
-Still live in the client, because it still reads through PostgREST:
+Still live:
 
-- `moveSound` issues two independent `UPDATE`s via `Promise.all`, not one
-  transaction. A partial failure leaves duplicate `position` values.
-- `removeSound` runs `.delete().eq('id', dbId)` with no `user_id` filter. Only RLS
-  stops one user deleting another's pad.
 - `index.html` still has bolt.new `og:image` URLs and the title
   "Python Soundboard Application".
 
-Fixed in the API but not yet reached, since the hook has not been repointed: the reorder
-route is one transactional statement, every mutation is scoped by `user_id`, and `position`
-is assigned server-side rather than from `sounds.length`.
-
 Fixed outright:
+
+- ~~`moveSound` issues two independent `UPDATE`s~~ — `POST /api/user-sounds/reorder` is one
+  `unnest ... with ordinality` statement in a transaction.
+- ~~`removeSound` has no `user_id` filter and relies on RLS~~ — every route scopes by the
+  caller's id server-side.
+- ~~`position` comes from the client's `sounds.length`~~ — assigned as `max(position) + 1`.
 
 - ~~`user_sounds.user_id` has no index~~ — `0002` adds `(user_id, position)`.
 - ~~`shared_sound_id` is `on delete set null`, which violates `sound_source_check`~~ —
@@ -185,20 +194,13 @@ rather than restating the detail, so guidance does not drift.
 | `.kiro/steering/project-context.md` | Kiro, always loaded |
 | `.kiro/steering/backend-portability.md` | Kiro, loaded when editing `frontend/src/lib/**`, `supabase/**` |
 | `.kiro/hooks/*.json` | Kiro, on session events |
-| `.claude/skills/**` | Claude Code — byte-identical mirror of `.kiro/skills/` |
-| `CLAUDE.md` | Claude Code, always loaded |
 | `.github/copilot-instructions.md` | Copilot, repo-wide |
 | `.github/instructions/*.instructions.md` | Copilot, path-scoped via `applyTo` |
 
 **Documentation is updated in the same change as the code, not afterwards.** The
-`docs-sync` skill holds the contract and the concern-to-file map. Two `Stop` hooks
-enforce it: `sync-agent-docs.json` runs the mirror script, and
-`docs-sync-reminder.json` prompts a check of the prose docs.
+`docs-sync` skill holds the contract and the concern-to-file map, and a `Stop` hook
+(`docs-sync-reminder.json`) prompts for it.
 
-`.kiro/skills/` is the source of truth for skills; `.claude/skills/` is generated.
-Never hand-edit the latter.
-
-```powershell
-npm run docs:sync    # copy .kiro/skills -> .claude/skills
-npm run docs:check   # verify, exit 1 on drift
-```
+Claude Code support was removed: `CLAUDE.md`, `.claude/skills/`, the mirror script and its
+`--check` are all gone. The two remaining instruction sets, `.kiro/` and `.github/`, are
+hand-maintained and **nothing verifies they agree**.

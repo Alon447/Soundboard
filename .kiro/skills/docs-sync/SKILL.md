@@ -47,31 +47,25 @@ mechanically derived from it. Keep the prose in one place and cross-reference.
 | `.kiro/skills/docs-sync/` | this contract and the file map | a doc, skill, steering or instruction file is added, renamed or removed |
 | `.kiro/steering/project-context.md` | always-loaded summary and the standing constraints | a standing constraint changes |
 | `.kiro/steering/backend-portability.md` | rules for editing the portability-critical layer | a rule for that layer changes |
-| `.claude/skills/**` | byte-identical mirror of `.kiro/skills/**` | never by hand — run `npm run docs:sync` |
-| `CLAUDE.md` | Claude Code entry point: commands, conventions, constraints, pointers | conventions, commands or constraints change |
-| `.github/copilot-instructions.md` | Copilot repo-wide conventions and constraints | same as `CLAUDE.md` |
+| `.github/copilot-instructions.md` | Copilot repo-wide conventions and constraints | conventions, commands or constraints change |
 | `.github/instructions/*.instructions.md` | Copilot path-scoped rules, mirroring the two main skills | the matching skill changes, or paths move |
 
 ## Rules
 
-**`docs/` first, then the agent configs.** Write the reasoning once in `docs/`.
-`CLAUDE.md`, the steering files and the Copilot instructions carry the short version
-plus a pointer. If you find yourself pasting three paragraphs into four files, the
-content belongs in `docs/` and the others should link to it.
+**`docs/` first, then the agent configs.** Write the reasoning once in `docs/`. The
+steering files and the Copilot instructions carry the short version plus a pointer. If you
+find yourself pasting three paragraphs into three files, the content belongs in `docs/` and
+the others should link to it.
 
-**Never hand-edit `.claude/skills/`.** `.kiro/skills/` is the source of truth. Run:
+**Two tools, one message.** Kiro and Copilot must not disagree. A rule that applies to the
+project applies in both, so `.kiro/steering/` and `.github/` get updated together.
 
-```powershell
-npm run docs:sync    # copy .kiro/skills -> .claude/skills
-npm run docs:check   # verify, exit 1 on drift
-```
-
-A Stop hook (`.kiro/hooks/sync-agent-docs.json`) runs the sync automatically, so in
-practice you only need `docs:check` to confirm.
-
-**Three tools, one message.** Kiro, Claude Code and Copilot must not disagree.
-A rule that applies to the project applies in all three. If you update a constraint
-in one, update the other two.
+**Claude Code support was removed.** `CLAUDE.md`, `.claude/skills/`,
+`scripts/sync-agent-docs.mjs`, the `sync-agent-docs` Stop hook and the `docs:sync` /
+`docs:check` scripts are all gone. There is no generated mirror any more, so every
+instruction file is hand-maintained and nothing verifies they agree — which makes the
+"two tools, one message" rule above the only safeguard. Re-adding Claude means restoring the
+mirror script *and* its `--check`, not just the markdown.
 
 **Delete rules that stop being true.** The most damaging documentation failure here
 is a rule that outlived its decision. "Auth is email + password, do not add other
@@ -84,7 +78,6 @@ contradiction next to it.
 - `fileMatchPattern` in `.kiro/steering/*.md` frontmatter
 - `applyTo` in `.github/instructions/*.instructions.md` frontmatter
 - the file inventory tables in `docs/architecture.md`
-- `SOURCE` / `TARGET` in `scripts/sync-agent-docs.mjs`
 
 The `frontend/` + `backend/` workspace split has happened, and it invalidated 91 `src/`
 references plus every `fileMatchPattern` and `applyTo` glob in the repo. They were rewritten
@@ -106,9 +99,7 @@ a sidecar before it moved into our own backend — otherwise all three get re-li
 
 1. Does `docs/` still describe reality? Check `architecture.md` for behaviour and
    `target-architecture.md` for stack decisions.
-2. Did a constraint or convention change? Update `.kiro/steering/`, `CLAUDE.md` and
-   `.github/` together.
+2. Did a constraint or convention change? Update `.kiro/steering/` and `.github/` together.
 3. Did a rule become false? Rewrite it rather than qualifying it.
 4. Did any file move? Fix `fileMatchPattern` and `applyTo`.
-5. Run `npm run docs:check`.
-6. If app code changed: `npm run build` and `npm run typecheck`.
+5. If app code changed: `npm run build` and `npm run typecheck:all`.

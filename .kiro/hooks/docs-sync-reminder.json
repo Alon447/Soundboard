@@ -7,7 +7,7 @@
       "description": "Reminds the agent to update docs, skills, steering and instruction files whenever a change lands, per the project's documentation-sync contract.",
       "action": {
         "type": "agent",
-        "prompt": "Before finishing: if this turn changed application code, schema, dependencies, deployment/hosting config, or any architectural decision, the project documentation must be updated in the same turn. Consult the `docs-sync` skill for the concern-to-file mapping and update every affected file: docs/*.md, .kiro/skills/**, .kiro/steering/**, CLAUDE.md, and .github/copilot-instructions.md plus .github/instructions/**. Do not mirror .kiro/skills to .claude/skills by hand — `npm run docs:sync` does that. If nothing documentation-relevant changed (a question was answered, a file was only read, a typo was fixed), this is a no-op: say nothing and stop."
+        "prompt": "Before finishing: if this turn changed application code, schema, dependencies, deployment/hosting config, or any architectural decision, the project documentation must be updated in the same turn. Consult the `docs-sync` skill for the concern-to-file mapping and update every affected file: docs/*.md, .kiro/skills/**, .kiro/steering/**, and .github/copilot-instructions.md plus .github/instructions/**. If nothing documentation-relevant changed (a question was answered, a file was only read, a typo was fixed), this is a no-op: say nothing and stop."
       }
     }
   ]

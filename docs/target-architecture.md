@@ -562,12 +562,17 @@ soundboard/
 │   ├── local_secrets/              # gitignored, created by `npm run secrets:example`
 │   ├── scripts/scaffoldLocalSecrets.mjs
 │   └── src/
-│       ├── index.ts                # Express 5 bootstrap, startup probe, graceful shutdown
+│       ├── index.ts                # lifecycle only: startup probe, listen, shutdown
+│       ├── app.ts                  # express assembly: json, /api router, 404, errors
 │       ├── config/index.ts         # Zod-validated env, exits on anything missing
 │       ├── checkConnectivity.ts    # `npm run api:check`
+│       ├── types/index.ts          # AuthUser + the one Express Request augmentation
 │       ├── middleware/
-│       │   └── requireUser.ts      # mock identity under IS_BLACK_ENV; 501 otherwise
+│       │   ├── requireUser.ts      # mock identity under IS_BLACK_ENV; 501 otherwise
+│       │   └── errorHandler.ts     # notFound + the handler that hides driver text
 │       ├── routes/
+│       │   ├── index.ts            # mounts /me and /user-sounds behind requireUser
+│       │   ├── me.ts               # GET /api/me
 │       │   └── userSounds.ts       # the five board routes
 │       └── utils/
 │           ├── secrets.ts          # Vault KV v2 + local-file branch + TTL cache
@@ -577,7 +582,7 @@ soundboard/
 │           ├── envCheck.ts         # isBlackEnv()
 │           └── logger.ts           # dependency-free structured logging
 ├── supabase/migrations/            # the original Supabase schema, superseded by 0002
-└── docs/  .kiro/  .claude/  .github/  scripts/
+└── docs/  .kiro/  .github/
 ```
 
 The root `package.json` is no longer a package in its own right. It holds the workspace list,
@@ -619,7 +624,6 @@ Everything is driven from the root; nothing needs a `cd`.
 | `npm run build:api` | compile the backend to `backend/dist` |
 | `npm run api:check` | connectivity self-check: every secret, PostgreSQL, and an S3 round trip |
 | `npm run secrets:example` | create `backend/local_secrets/` and `backend/.env` from the committed templates |
-| `npm run docs:sync` / `docs:check` | mirror and verify `.claude/skills` |
 
 `api:check` is the first thing to run in a new environment. Four checks — the two secrets,
 PostgreSQL, S3 — each reporting one line. It prints secret field *names*, never values, and

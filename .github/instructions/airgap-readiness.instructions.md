@@ -7,8 +7,7 @@ description: "Offline / air-gapped deployment blockers: the ffmpeg.wasm core fet
 
 The deployment target is a closed environment with no outbound internet. Most of these
 failure modes look like unrelated bugs, and several pass a casual smoke test. Full
-checklist in `.kiro/skills/airgap-readiness/SKILL.md` (mirrored under
-`.claude/skills/`).
+checklist in `.kiro/skills/airgap-readiness/SKILL.md`.
 
 Sections 1 to 5 apply to the app as it stands. Sections 6 and 7 apply once the Node
 API, S3 and Keycloak are in play.
