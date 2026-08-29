@@ -1,7 +1,7 @@
 # Moving Soundboard off Supabase
 
 Target: a closed / air-gapped environment with no Supabase and no outbound internet.
-What it *does* have: **PostgreSQL, S3-compatible object storage, Keycloak, and HashiCorp
+What it _does_ have: **PostgreSQL, S3-compatible object storage, Keycloak, and HashiCorp
 Vault**, plus the ability to run a Node process.
 
 It also already runs `../yanshuf3` and `../yanshuf3-Hana2Trino` on that stack, which is
@@ -14,7 +14,7 @@ decisions it arrives at are written up as a concrete design in
 rather than the reasoning.
 
 > This document has been revised twice as the environment became clearer. The first
-> revision assumed PostgreSQL was the *only* thing available and recommended audio in a
+> revision assumed PostgreSQL was the _only_ thing available and recommended audio in a
 > `bytea` column with hand-rolled password auth. The second added S3 and Keycloak. The third
 > replaced SPA-side PKCE with a server-side cookie flow after finding that both sibling
 > projects already work that way. The fourth moved that flow out of a separate sidecar and
@@ -27,7 +27,7 @@ rather than the reasoning.
 **No. Not as-is.** Two independent reasons, both fatal:
 
 1. **Supabase Storage is not a Postgres feature.** It is a separate Node service
-   that puts the actual bytes on S3 or a local disk and keeps only *metadata* rows
+   that puts the actual bytes on S3 or a local disk and keeps only _metadata_ rows
    in a `storage.objects` table. A plain PostgreSQL server has no `storage` schema,
    no `storage.buckets`, no `storage.foldername()`, and no way to hand bytes to a
    browser over HTTP. The audio has nowhere to live.
@@ -39,21 +39,21 @@ rather than the reasoning.
 
 The same applies one level up: the browser cannot talk to PostgreSQL at all.
 PostgreSQL speaks its own binary protocol over TCP, not HTTP, and browsers cannot
-open raw TCP sockets. Today the architecture is *browser → managed HTTP services →
-PG*. Removing Supabase leaves *browser → nothing → PG*.
+open raw TCP sockets. Today the architecture is _browser → managed HTTP services →
+PG_. Removing Supabase leaves _browser → nothing → PG_.
 
 **So the port is not "swap the database". It is "supply the HTTP layer Supabase was
 providing": auth, data access, and file serving.**
 
 ## What has to be replaced
 
-| Supabase piece | Used for | Replacement |
-| --- | --- | --- |
-| GoTrue (`auth.*`) | email/password signup, login, session, `auth.users` table | **Keycloak**, code flow in our own backend; the `upn` claim stored directly, no users table |
-| PostgREST (`from(...)`) | 11 query shapes over 2 tables | own Node API (or self-hosted PostgREST) |
-| Storage (`storage.*`) | upload + long-lived signed URL for audio bytes | **S3 bucket**, object key stored in PostgreSQL |
-| RLS + `auth.uid()` | the *only* thing stopping cross-user reads/writes | ownership checks in the API layer (mandatory, see below) |
-| project env vars / anon key | client and server credentials | **HashiCorp Vault**, read directly over KV v2 |
+| Supabase piece              | Used for                                                  | Replacement                                                                                 |
+| --------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| GoTrue (`auth.*`)           | email/password signup, login, session, `auth.users` table | **Keycloak**, code flow in our own backend; the `upn` claim stored directly, no users table |
+| PostgREST (`from(...)`)     | 11 query shapes over 2 tables                             | own Node API (or self-hosted PostgREST)                                                     |
+| Storage (`storage.*`)       | upload + long-lived signed URL for audio bytes            | **S3 bucket**, object key stored in PostgreSQL                                              |
+| RLS + `auth.uid()`          | the _only_ thing stopping cross-user reads/writes         | ownership checks in the API layer (mandatory, see below)                                    |
+| project env vars / anon key | client and server credentials                             | **HashiCorp Vault**, read directly over KV v2                                               |
 
 Keycloak and S3 between them remove the two hardest parts of the original plan: writing
 auth from scratch, and finding somewhere for bytes to live. Vault removes the third —
@@ -94,7 +94,7 @@ boring solution, and it is worth it to keep large binaries out of the database.
 Store the file in `sound_assets.data bytea`, serve from the API.
 
 Genuinely attractive when PostgreSQL is the only durable store: one backup covers
-data *and* media, no second system to provision, deleting a sound deletes its bytes
+data _and_ media, no second system to provision, deleting a sound deletes its bytes
 with no GC to write, and no cross-system consistency problem at all.
 
 Rejected because it does not scale in the ways this app will eventually be asked to:
@@ -131,7 +131,7 @@ with an asset reference and derive the URL on the client:
 
 ```ts
 // frontend/src/lib/useUserSounds.ts — userSoundToBoard
-audio_path: builtin?.audio_path ?? (row.shared_sound ? `/api/shared-sounds/${row.shared_sound.id}/audio` : '')
+audio_path: builtin?.audio_path ?? (row.shared_sound ? `/api/shared-sounds/${row.shared_sound.id}/audio` : '');
 ```
 
 `assetPath()` already passes through anything starting with `/`, so this needs no
@@ -268,7 +268,7 @@ safe. The moment you put a hand-written API in front of PG:
 - Keep RLS on as defence in depth if you go the PostgREST route or connect as a
   non-superuser role.
 
-This is a correctness *and* security requirement, not a porting detail. It is the
+This is a correctness _and_ security requirement, not a porting detail. It is the
 easiest thing to get wrong in this migration.
 
 ## Non-obvious traps
@@ -313,17 +313,17 @@ easiest thing to get wrong in this migration.
 9. **The AWS SDK's default credential chain probes EC2 IMDS.** In a closed network
    that means a hang or a slow timeout on every S3 call. Pass credentials
    explicitly. See the `airgap-readiness` skill.
-10. **S3 and PostgreSQL cannot share a transaction.** Write S3 first, then the
-    database, so a failure leaves an orphaned object rather than a row pointing at
-    nothing. Reconcile orphans on a schedule.
-11. **`.env` has a committed anon key.** `VITE_SUPABASE_ANON_KEY` is in the repo.
-    Rotate it and drop both vars when the migration lands.
-12. **`gen_random_uuid()` needs PG 13+**, or `pgcrypto` on older versions. Confirm
-    the target server version before assuming defaults work.
-13. **TLS and internal CAs.** Node → PostgreSQL uses `ssl: { rejectUnauthorized: false }`
-    by decision, so no CA file is needed there — but a non-TLS PostgreSQL will not work at
-    all. Node → S3 and Node → Keycloak use `NODE_EXTRA_CA_CERTS`; do not disable
-    verification for those.
+10.   **S3 and PostgreSQL cannot share a transaction.** Write S3 first, then the
+      database, so a failure leaves an orphaned object rather than a row pointing at
+      nothing. Reconcile orphans on a schedule.
+11.   **`.env` has a committed anon key.** `VITE_SUPABASE_ANON_KEY` is in the repo.
+      Rotate it and drop both vars when the migration lands.
+12.   **`gen_random_uuid()` needs PG 13+**, or `pgcrypto` on older versions. Confirm
+      the target server version before assuming defaults work.
+13.   **TLS and internal CAs.** Node → PostgreSQL uses `ssl: { rejectUnauthorized: false }`
+      by decision, so no CA file is needed there — but a non-TLS PostgreSQL will not work at
+      all. Node → S3 and Node → Keycloak use `NODE_EXTRA_CA_CERTS`; do not disable
+      verification for those.
 
 Supabase's bcrypt password hashes in `auth.users.encrypted_password` used to matter,
 back when the plan was local passwords. With Keycloak they are irrelevant — export
@@ -374,7 +374,7 @@ client seeds its own board. The move rewrote 91 `src/` references
 across `docs/`, the skills, steering and instruction files, plus every `fileMatchPattern`
 and `applyTo` glob — exactly the breakage the `docs-sync` skill flagged in advance.
 
-**Phase 2 — stand up the new backend.** *In progress.* Done: the secrets module, the S3
+**Phase 2 — stand up the new backend.** _In progress._ Done: the secrets module, the S3
 client, both migrations (`0001_init.sql` for a fresh database, `0002` altering the live
 Supabase `user_sounds`; no `auth.` or `storage.` references in either), the connection pool,
 and the Express 5 API serving the five board routes behind a mock identity.

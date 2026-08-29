@@ -65,11 +65,11 @@ Verify in the browser console: `crossOriginIsolated === true`.
 
 Current state:
 
-| Reference                                      | File                                | Impact                                |
-| ---------------------------------------------- | ----------------------------------- | ------------------------------------- |
-| ~~`https://unpkg.com/@ffmpeg/core-mt@…`~~      | ~~`frontend/src/lib/ffmpegConvert.ts`~~ | fixed — bundled via `?url`         |
-| ~~`https://bolt.new/static/og_default.png`~~   | ~~`index.html` `og:image`~~         | deleted, with the twitter card tags   |
-| ~~`http://localhost:3001` (`YOUTUBE_SERVER`)~~ | ~~`add-sound/constants.ts`~~        | deleted, with `YouTubeSoundPanel.tsx` |
+| Reference                                      | File                                    | Impact                                |
+| ---------------------------------------------- | --------------------------------------- | ------------------------------------- |
+| ~~`https://unpkg.com/@ffmpeg/core-mt@…`~~      | ~~`frontend/src/lib/ffmpegConvert.ts`~~ | fixed — bundled via `?url`            |
+| ~~`https://bolt.new/static/og_default.png`~~   | ~~`index.html` `og:image`~~             | deleted, with the twitter card tags   |
+| ~~`http://localhost:3001` (`YOUTUBE_SERVER`)~~ | ~~`add-sound/constants.ts`~~            | deleted, with `YouTubeSoundPanel.tsx` |
 
 Fonts and icons are safe: `lucide-react` ships SVG components in the bundle, and
 there is no webfont link. Tailwind 4 builds at compile time.
