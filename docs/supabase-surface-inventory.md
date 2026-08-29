@@ -5,19 +5,28 @@ the source; line numbers drift, the call shapes are what matter.
 
 There are **no** realtime subscriptions, `.rpc()` calls, or edge functions.
 
-## Auth — 5 calls
+## Auth — 0 calls, done
 
-| Call site | Supabase API |
-| --- | --- |
-| `frontend/src/lib/useAuth.tsx` | `supabase.auth.getSession()` on mount |
-| `frontend/src/lib/useAuth.tsx` | `supabase.auth.onAuthStateChange(cb)` + `subscription.unsubscribe()` |
-| `frontend/src/lib/useAuth.tsx` | `supabase.auth.signOut()` |
-| `frontend/src/components/AuthPage.tsx` | `supabase.auth.signInWithPassword({ email, password })` |
-| `frontend/src/components/AuthPage.tsx` | `supabase.auth.signUp({ email, password })` |
+All five are gone, along with `@supabase/supabase-js` and the `supabase` CLI. What they were:
 
-`useAuth` exposes `{ user, session, loading, signOut }`. Session persistence and
-token refresh are supabase-js defaults (localStorage + auto refresh); nothing
-custom, so a replacement is free to use an httpOnly cookie instead.
+| Was, at        | Supabase API                            | Now                                     |
+| -------------- | --------------------------------------- | --------------------------------------- |
+| `useAuth.tsx`  | `supabase.auth.getSession()` on mount   | `useQuery` on `GET /api/me`             |
+| `useAuth.tsx`  | `supabase.auth.onAuthStateChange(cb)`   | nothing — react-query owns the cache    |
+| `useAuth.tsx`  | `supabase.auth.signOut()`               | **dropped** — no sign-out, see below    |
+| `AuthPage.tsx` | `supabase.auth.signInWithPassword(...)` | **deleted** — Keycloak owns credentials |
+| `AuthPage.tsx` | `supabase.auth.signUp(...)`             | **deleted** — no signup to build        |
+
+`useAuth` now exposes `{ user, loading }`. `session` was dropped because nothing read it, and
+`signOut` because there is nothing to sign out of: users arrive already authenticated to the
+organisation account. `AuthPage.tsx` was replaced by `SignInPrompt.tsx`: no form, one button,
+so a failing `/api/me` cannot produce a redirect loop.
+
+**The Keycloak flow is built** — `/auth/login|callback` plus per-request ID token
+verification in `requireUser`. Under `IS_BLACK_ENV` it is bypassed for `MOCK_USER_ID`, which
+is how it gets developed with no Keycloak reachable. With `IS_BLACK_ENV=false` the config
+demands `OIDC_ISSUER_URL` and `OIDC_REDIRECT_URI`, and the client credentials come from Vault
+at `idp/keycloak/soundboard`. **Untested against a real realm** — there is none to reach.
 
 Fields of `user` actually consumed:
 
@@ -25,16 +34,12 @@ Fields of `user` actually consumed:
 - `user.email` — header label in `App.tsx`, and `owner_name` fallback
 - `user.user_metadata?.name` — first choice for `shared_sounds.owner_name`
 
-`AuthPage` shows "Account created. Confirm your email, then sign in." when
-`signUp` returns no session. Password rule is a client-side `minLength={6}`.
-No magic link, OAuth, or password reset exists.
+The old form showed "Account created. Confirm your email, then sign in." when `signUp`
+returned no session, and enforced a client-side `minLength={6}`. There was no magic link,
+OAuth or password reset — which is why replacing it with SSO cost nothing.
 
-**All five calls are replaced by Keycloak**, not by hand-written equivalents and not by a
-browser OIDC library. There is no signup or password endpoint to build; `/auth/login`,
-`/auth/callback` and `/auth/logout` live in our own backend. `useAuth` reads
-`GET /api/me` and its `login()` is a full-page navigation to `/auth/login`, so
-**`AuthPage.tsx` is deleted rather than rewritten** — SSO means there is no form to show. The one thing the replacement must do that Supabase
-did implicitly is map the Keycloak `upn` claim onto the existing Supabase user id; see
+The one thing the replacement must still do that Supabase did implicitly is map the Keycloak
+`upn` claim onto the existing user id; see
 [`target-architecture.md`](./target-architecture.md).
 
 ## Database — 0 calls, done
@@ -42,14 +47,14 @@ did implicitly is map the Keycloak `upn` claim onto the existing Supabase user i
 `frontend/src/lib/useUserSounds.ts` goes through `frontend/src/lib/api.ts` now. What each
 former call became:
 
-| Purpose | Was | Now |
-| --- | --- | --- |
-| load board | `.from('user_sounds').select('*, shared_sound:shared_sounds(*)').eq('user_id', userId).order('position')` | `GET /api/user-sounds` |
-| seed first login | `.from('user_sounds').insert(seededRows).select('*')` | `POST /api/user-sounds` with all 15 pads, sent by the client |
-| add built-in | `.from('user_sounds').insert({ ... })` | `POST /api/user-sounds` with a one-element array |
-| remove pad | `.from('user_sounds').delete().eq('id', dbId)` — no `user_id` filter | `DELETE /api/user-sounds/:id`, scoped server-side |
-| move pad | two parallel `.update({ position })` — not transactional | `POST /api/user-sounds/reorder`, one statement |
-| set gain | `.from('user_sounds').update({ gain }).eq('id', dbId)` | `PATCH /api/user-sounds/:id` |
+| Purpose          | Was                                                                                                       | Now                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| load board       | `.from('user_sounds').select('*, shared_sound:shared_sounds(*)').eq('user_id', userId).order('position')` | `GET /api/user-sounds`                                       |
+| seed first login | `.from('user_sounds').insert(seededRows).select('*')`                                                     | `POST /api/user-sounds` with all 15 pads, sent by the client |
+| add built-in     | `.from('user_sounds').insert({ ... })`                                                                    | `POST /api/user-sounds` with a one-element array             |
+| remove pad       | `.from('user_sounds').delete().eq('id', dbId)` — no `user_id` filter                                      | `DELETE /api/user-sounds/:id`, scoped server-side            |
+| move pad         | two parallel `.update({ position })` — not transactional                                                  | `POST /api/user-sounds/reorder`, one statement               |
+| set gain         | `.from('user_sounds').update({ gain }).eq('id', dbId)`                                                    | `PATCH /api/user-sounds/:id`                                 |
 
 The embedded join `shared_sound:shared_sounds(*)` is gone and the API does not implement it,
 so **a pad still pointing at `shared_sound_id` has no audio.** Running `db/migrations/0002`
@@ -72,10 +77,10 @@ return in phase 6 against S3.
 
 Both calls are gone. They were:
 
-| Purpose | Call |
-| --- | --- |
-| upload | `supabase.storage.from('sounds').upload('<user_id>/<Date.now()>.<ext>', file, { upsert: false })` |
-| get URL | `supabase.storage.from('sounds').createSignedUrl(filePath, 60*60*24*365*10)` |
+| Purpose | Call                                                                                              |
+| ------- | ------------------------------------------------------------------------------------------------- |
+| upload  | `supabase.storage.from('sounds').upload('<user_id>/<Date.now()>.<ext>', file, { upsert: false })` |
+| get URL | `supabase.storage.from('sounds').createSignedUrl(filePath, 60*60*24*365*10)`                      |
 
 The signed URL was persisted verbatim into `shared_sounds.file_url`, which is what made the
 old data unportable.
@@ -97,35 +102,37 @@ Bucket `sounds` is `public = false` with `file_size_limit = "50MiB"` in
 
 ## Supabase-specific SQL in `supabase/migrations/`
 
-| Construct | Where | Replacement |
-| --- | --- | --- |
-| `references auth.users(id)` | both tables | dropped; ownership columns become `text` holding the Keycloak `upn` |
-| `auth.uid()` | 5 RLS policies | API-layer ownership checks from the validated token |
-| `enable row level security` | both tables | keep only if connecting as a non-superuser role |
-| `insert into storage.buckets` | 1st migration | drop; S3 bucket, key in `sound_assets` |
-| `create policy on storage.objects` | 1st migration | drop |
-| `storage.foldername(name)` | storage policy | drop |
-| `auth.users.raw_user_meta_data` / `.email` | backfill CTE | drop; one-time historical statement |
-| `gen_random_uuid()` | both PKs | core in PG 13+, else `pgcrypto` |
-| `gain numeric` | both tables | prefer `double precision` (see driver note below) |
+| Construct                                  | Where          | Replacement                                                         |
+| ------------------------------------------ | -------------- | ------------------------------------------------------------------- |
+| `references auth.users(id)`                | both tables    | dropped; ownership columns become `text` holding the Keycloak `upn` |
+| `auth.uid()`                               | 5 RLS policies | API-layer ownership checks from the validated token                 |
+| `enable row level security`                | both tables    | keep only if connecting as a non-superuser role                     |
+| `insert into storage.buckets`              | 1st migration  | drop; S3 bucket, key in `sound_assets`                              |
+| `create policy on storage.objects`         | 1st migration  | drop                                                                |
+| `storage.foldername(name)`                 | storage policy | drop                                                                |
+| `auth.users.raw_user_meta_data` / `.email` | backfill CTE   | drop; one-time historical statement                                 |
+| `gen_random_uuid()`                        | both PKs       | core in PG 13+, else `pgcrypto`                                     |
+| `gain numeric`                             | both tables    | prefer `double precision` (see driver note below)                   |
 
 No GRANTs, no extensions, no triggers, no functions, and **no indexes beyond the
 primary keys** — notably none on `user_sounds.user_id`.
 
 ## Client config
 
-- `frontend/src/lib/supabase.ts` reads `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`,
-  throwing if either is missing. Both live in `.env`, which is committed with a
-  real anon key — rotate it.
+- ~~`frontend/src/lib/supabase.ts`~~ — **deleted.** `VITE_SUPABASE_URL` and
+  `VITE_SUPABASE_ANON_KEY` are still sitting in `frontend/.env`, now read by nothing. The
+  file is gitignored, but the key was committed earlier in this repo's history, so **rotate
+  it** regardless of the dead variables.
 - `frontend/src/vite-env.d.ts` has no typed `ImportMetaEnv`, so adding env vars needs no
   type changes.
 - `frontend/vite.config.ts` has nothing Supabase-specific, but does set COOP/COEP for
   ffmpeg.wasm and excludes `@ffmpeg/*` from `optimizeDeps`.
-- Dependencies to drop at the end: `@supabase/supabase-js`, and the `supabase` CLI dev
-  dependency. On the web side only **`axios`** is added, for `frontend/src/lib/api.ts` —
-  still no OIDC client library, because the cookie session removes the need for one. The
-  backend has gained `pg`, `express`, `zod` and `@aws-sdk/client-s3`, with `jose` and
-  `openid-client` still to come,
+- ~~Dependencies to drop at the end: `@supabase/supabase-js`, the `supabase` CLI~~ —
+  **both uninstalled.** The frontend bundle dropped from 1,181 kB to 1,004 kB.
+  On the web side only **`axios`** was added, for `frontend/src/lib/api.ts` —
+  still no OIDC client library in the browser, because the cookie session removes the need.
+  The backend has gained `pg`, `express`, `jose`, `zod` and `@aws-sdk/client-s3` — and
+  deliberately **not** `openid-client`,
   which is the argument for the workspace split in
   [`target-architecture.md`](./target-architecture.md): server dependencies must not
   leak into the browser bundle.

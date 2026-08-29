@@ -1,11 +1,11 @@
 import { useCallback, useEffect } from 'react';
 import * as Icons from 'lucide-react';
-import { Button, Tooltip, TooltipContent, TooltipTrigger, Spinner } from '@heroui/react';
+import { Button, Spinner } from '@heroui/react';
 import { useAuth } from '@/lib/useAuth';
 import { useUserSounds, type BoardSound } from '@/lib/useUserSounds';
 import { useSoundStore } from '@/store/soundStore';
 import { playSynth } from '@/lib/synth';
-import AuthPage from '@/components/AuthPage';
+import SignInPrompt from '@/components/SignInPrompt';
 import AddSoundModal from '@/components/AddSoundModal';
 import SoundPad from '@/components/soundboard/SoundPad';
 import { assetPath, isSynth } from '@/components/soundboard/soundboardUtils';
@@ -16,17 +16,8 @@ const PAD_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '='];
 // App
 // ---------------------------------------------------------------------------
 export default function App() {
-	const { user, loading: authLoading, signOut } = useAuth();
-	const {
-		sounds,
-		loading: soundsLoading,
-		error,
-		addBuiltinSound,
-		addCustomSound,
-		removeSound,
-		moveSound,
-		updateGain,
-	} = useUserSounds();
+	const { user, loading: authLoading } = useAuth();
+	const { sounds, loading: soundsLoading, error, addBuiltinSound, addCustomSound, removeSound, moveSound, updateGain } = useUserSounds();
 
 	// Zustand store — pull only what each section needs (fine-grained subscriptions)
 	const activeId = useSoundStore((s) => s.activeId);
@@ -132,7 +123,7 @@ export default function App() {
 			</div>
 		);
 	}
-	if (!user) return <AuthPage />;
+	if (!user) return <SignInPrompt />;
 
 	const existingSoundIds = sounds.map((s) => s.id);
 	const identityLabel = user.email ?? 'Signed in';
@@ -172,23 +163,6 @@ export default function App() {
 						<Icons.Plus className="w-3.5 h-3.5" />
 						Add Sound
 					</Button>
-
-					{/* Sign out */}
-					<Tooltip>
-						<TooltipTrigger>
-							<Button
-								isIconOnly
-								variant="ghost"
-								size="sm"
-								className="sb-button"
-								onPress={signOut}
-								aria-label="Sign out"
-							>
-								<Icons.LogOut className="w-4 h-4" />
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent>Sign out</TooltipContent>
-					</Tooltip>
 				</div>
 			</header>
 

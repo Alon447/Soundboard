@@ -6,7 +6,8 @@ inclusion: always
 
 React 19 + Vite 8 soundboard. HeroUI 3 + Tailwind 4, `lucide-react` icons,
 `@tanstack/react-query` for server state, `zustand` for UI state and audio refs.
-The board runs on our own Express API over PostgreSQL; Supabase is down to GoTrue auth only.
+**Supabase is gone** — no calls, no dependency. The board runs on our own Express API over
+PostgreSQL, and identity is a mock until Keycloak lands.
 Import with the `@/` alias, not deep relative paths. One React component per file.
 
 Validate app changes with `npm run build` and `npm run typecheck`.

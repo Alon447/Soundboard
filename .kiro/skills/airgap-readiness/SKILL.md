@@ -15,28 +15,25 @@ pending. See
 `docs/target-architecture.md` for the design and `docs/house-conventions.md` for the
 sibling projects that have already solved most of them.
 
-## 1. ffmpeg.wasm loads its core from unpkg.com — hard failure
+## 1. ffmpeg.wasm core — fixed, keep it that way
 
-`frontend/src/lib/ffmpegConvert.ts` does this at runtime:
+`frontend/src/lib/ffmpegConvert.ts` used to fetch its core from `unpkg.com` at runtime.
+Every video upload goes through `extractAudioFromVideo`, so with no internet the whole
+upload flow died for any `.mov`/`.mp4`/`.mkv` while audio-only uploads kept working — easy
+to miss in testing.
 
-```ts
-const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-```
+It now imports the three core files with `?url`, so Vite emits them into the bundle and
+serves them same-origin. Two supporting pieces in `frontend/vite.config.ts` look removable
+and are not:
 
-Every video upload goes through `extractAudioFromVideo`, so with no internet the
-entire upload flow dies for any `.mov`/`.mp4`/`.mkv`. Audio-only uploads still work,
-which makes this easy to miss in testing.
+1. `resolve.alias` maps `ffmpeg-core` to the resolved `@ffmpeg/core-mt` esm directory,
+   because the package's `exports` map exposes only the root and `./wasm` — deep imports
+   fail and the worker has no entry at all.
+2. `build.assetsInlineLimit` returns `false` for `ffmpeg-core.worker`. It is 2.8 KB, under
+   the default inline threshold, and a `data:` URL cannot back a `Worker`.
 
-`@ffmpeg/core-mt` is already a dependency. Vendor it:
-
-1. Copy `node_modules/@ffmpeg/core-mt/dist/esm/{ffmpeg-core.js,ffmpeg-core.wasm,ffmpeg-core.worker.js}`
-   into `frontend/public/ffmpeg/`.
-2. Change `baseURL` to `/ffmpeg`.
-3. Add an npm script so it cannot drift on the next `npm install`, and wire it into
-   `prebuild`.
-
-Keep `toBlobURL` even though the files are now same-origin — the worker needs a blob
-URL under `COEP: require-corp`.
+`toBlobURL` is no longer used; the assets are already same-origin. Never reintroduce a CDN
+`baseURL`.
 
 Test with devtools throttling set to offline, not just by reading the code.
 
@@ -68,11 +65,11 @@ Verify in the browser console: `crossOriginIsolated === true`.
 
 Current state:
 
-| Reference | File | Impact |
-| --- | --- | --- |
-| `https://unpkg.com/@ffmpeg/core-mt@…` | `frontend/src/lib/ffmpegConvert.ts` | breaks video upload — fix it |
-| `https://bolt.new/static/og_default.png` | `index.html` `og:image` | inert; remove for tidiness |
-| ~~`http://localhost:3001` (`YOUTUBE_SERVER`)~~ | ~~`add-sound/constants.ts`~~ | deleted, with `YouTubeSoundPanel.tsx` |
+| Reference                                      | File                                | Impact                                |
+| ---------------------------------------------- | ----------------------------------- | ------------------------------------- |
+| ~~`https://unpkg.com/@ffmpeg/core-mt@…`~~      | ~~`frontend/src/lib/ffmpegConvert.ts`~~ | fixed — bundled via `?url`         |
+| ~~`https://bolt.new/static/og_default.png`~~   | ~~`index.html` `og:image`~~         | deleted, with the twitter card tags   |
+| ~~`http://localhost:3001` (`YOUTUBE_SERVER`)~~ | ~~`add-sound/constants.ts`~~        | deleted, with `YouTubeSoundPanel.tsx` |
 
 Fonts and icons are safe: `lucide-react` ships SVG components in the bundle, and
 there is no webfont link. Tailwind 4 builds at compile time.
@@ -119,20 +116,20 @@ Pick a number appropriate for short clips — 15 MiB is generous.
 **The default credential chain probes EC2 instance metadata.** If you construct an
 `S3Client` without explicit credentials, the AWS SDK walks its provider chain and
 eventually tries `http://169.254.169.254`. In a closed network that address is not
-refused, it is *unreachable*, so every S3 call pays a connection timeout before
+refused, it is _unreachable_, so every S3 call pays a connection timeout before
 failing. Symptom: uploads and audio playback "randomly" take many seconds, then error.
 
 Pass credentials explicitly and disable the probe:
 
 ```ts
 const s3 = new S3Client({
-  endpoint: process.env.S3_ENDPOINT,          // https://s3.internal
-  region: process.env.S3_REGION ?? 'us-east-1', // often ignored, still required
-  forcePathStyle: true,
-  credentials: {
-    accessKeyId: process.env.S3_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
-  },
+	endpoint: process.env.S3_ENDPOINT, // https://s3.internal
+	region: process.env.S3_REGION ?? 'us-east-1', // often ignored, still required
+	forcePathStyle: true,
+	credentials: {
+		accessKeyId: process.env.S3_ACCESS_KEY_ID!,
+		secretAccessKey: process.env.S3_SECRET_ACCESS_KEY!,
+	},
 });
 ```
 
@@ -154,7 +151,7 @@ presigned URLs, bucket CORS becomes a hard prerequisite.
 
 ## 7. Keycloak connectivity — the issuer URL must be identical on both sides
 
-Two independent network paths have to work, and they are often *not* the same route:
+Two independent network paths have to work, and they are often _not_ the same route:
 
 - **browser → Keycloak**, for the login redirect
 - **backend → Keycloak**, for discovery, the code exchange, and the JWKS document used to
@@ -170,8 +167,9 @@ by disabling issuer validation.
 
 Also check:
 
-- The realm's client has the app's **redirect URI and post-logout redirect URI**
-  registered. Unregistered URIs fail at Keycloak with an error page, not in your app.
+- The realm's client has the app's **redirect URI** registered. Unregistered URIs fail
+  at Keycloak with an error page, not in your app. There is no logout, so no post-logout
+  redirect URI is needed.
 - JWKS is fetched lazily and cached. First sign-in after an API restart pays that
   fetch, so a firewall rule that only blocks it intermittently produces intermittent
   401s.
@@ -180,7 +178,7 @@ Also check:
   Confirm both sync to the same internal NTP source, and allow a small
   `clockTolerance` — `../yanshuf3` passes none, which is a latent fault.
 - **JWKS caching.** yanshuf3 memoises the JWKS for the process lifetime with no TTL, so
-  a Keycloak key rotation needs a restart. It also runs OIDC discovery at *import* time,
+  a Keycloak key rotation needs a restart. It also runs OIDC discovery at _import_ time,
   which means Keycloak being unreachable at boot stops the container starting. Prefer a
   lazy fetch with a TTL and refetch-on-unknown-`kid`.
 - Keycloak's own TLS certificate must be trusted by Node — see the TLS section below.
@@ -220,7 +218,7 @@ Closed environments usually run an internal CA, and there are now four TLS hops.
 **One scoped exception: PostgreSQL.** `backend/src/utils/pg.ts` sets
 `ssl: { rejectUnauthorized: false }` unconditionally, by explicit decision — TLS on,
 certificate unverified — so that one connection secret works against both Supabase and an
-internal CA without a config knob. The consequence is that a PostgreSQL with SSL *disabled*
+internal CA without a config knob. The consequence is that a PostgreSQL with SSL _disabled_
 cannot be used at all.
 
 Everywhere else, never reach for `rejectUnauthorized: false`, and never for
@@ -238,7 +236,7 @@ tooling from `yanshuf3/scripts/` rather than rediscovering the problems:
   `package-lock.json` generated against the public registry, so `npm ci` fails with an
   error that does not obviously point at the mirror. This is the single most likely thing
   to block a first build in the closed environment.
-- **`checkNexusPackages.mjs`** reads the lockfile and reports *every* package missing
+- **`checkNexusPackages.mjs`** reads the lockfile and reports _every_ package missing
   from the mirror at once, instead of discovering them one at a time through failing
   installs. `--prepare-upload --tarballs <dir>` builds the `.tgz` bundles to upload.
 - **`bundleOfflineDeps.mjs`** stages and archives dependencies for transfer across the
@@ -261,7 +259,7 @@ Also:
 
 `backend/src/checkConnectivity.ts` is the first thing to run in a new environment. Four
 checks — the two secrets, PostgreSQL plus its three tables, and an S3 round trip — each
-reporting one line with the driver's own error. It prints secret *field names* only, never
+reporting one line with the driver's own error. It prints secret _field names_ only, never
 values, so it is safe to run against production.
 
 It stays deliberately thin. An earlier version carried a table of likely causes per failure
@@ -273,7 +271,7 @@ Two hard-won details in it, both worth copying into anything similar:
 **Node reports a refused connection as an `AggregateError` with an empty `message`.** When
 every address family is refused — the normal case for `localhost` with IPv4 and IPv6 — the
 useful information is in `error.errors[]`, one entry per address, and `error.message` is the
-empty string. A diagnostic that prints `error.message` prints *nothing at all* for the most
+empty string. A diagnostic that prints `error.message` prints _nothing at all_ for the most
 common failure there is. Falling back to `errors[0].message`, then `error.name`, is enough —
 three lines, no cause-chain walking.
 
@@ -291,11 +289,11 @@ the KV v2 HTTP API** — no intermediary service. hana2trino's
 `backend/src/utils/secrets.ts` is the model:
 
 ```ts
-const res = await axios.get(`${config.VAULT_PATH.replace(/\/+$/, "")}/data/${name}`, {
-  headers: { "X-Vault-Token": config.VAULT_TOKEN, Accept: "application/json" },
-  timeout: 5_000,
+const res = await axios.get(`${config.VAULT_PATH.replace(/\/+$/, '')}/data/${name}`, {
+	headers: { 'X-Vault-Token': config.VAULT_TOKEN, Accept: 'application/json' },
+	timeout: 5_000,
 });
-const data = (res.data as { data?: { data?: unknown } })?.data?.data;  // KV v2 double nesting
+const data = (res.data as { data?: { data?: unknown } })?.data?.data; // KV v2 double nesting
 ```
 
 with an `IS_BLACK_ENV` branch reading `local_secrets/<name>` as JSON. yanshuf3's older
@@ -319,7 +317,7 @@ secret read.
 to boot with the secret store unreachable. yanshuf3's Python service gets this wrong — it
 runs OIDC discovery at import, so Keycloak being down at boot stops the container starting.
 
-**But memoise the derived clients.** hana2trino reads Vault on *every* call, which buys
+**But memoise the derived clients.** hana2trino reads Vault on _every_ call, which buys
 rotation without a restart at the cost of a round trip per database call — its own docstring
 says so. One `pg.Pool` and one `S3Client`, built lazily and reused, with a TTL on the secret
 read, gets both properties. (hana2trino also builds two brand-new pools per call and closes
@@ -364,13 +362,13 @@ nobody can debug from a desk.
 
 Frontend and assets:
 
-- [ ] ffmpeg core served from `frontend/public/ffmpeg/`, `baseURL` updated, no unpkg reference
+- [x] ffmpeg core bundled by Vite from `@ffmpeg/core-mt`, no unpkg reference, worker not inlined
 - [ ] `crossOriginIsolated === true` on the production host
 - [ ] COOP + COEP set by the production server, not just Vite
 - [ ] devtools offline: no failed network requests, video upload still converts
 - [ ] built-in audio filenames are ASCII and pads still play
 - [ ] upload size limit enforced client and server side
-- [ ] `index.html` title and `og:image` no longer say bolt.new / "Python Soundboard"
+- [x] `index.html` title and `og:image` no longer say bolt.new / "Python Soundboard"
 
 S3:
 
@@ -384,7 +382,7 @@ S3:
 Keycloak:
 
 - [ ] the same issuer URL resolves from both the browser and the validating service
-- [ ] redirect URI and post-logout redirect URI registered on the client
+- [ ] redirect URI registered on the client
 - [ ] clocks agree, and a non-zero `clockTolerance` is configured
 - [ ] sign in, reload the page, confirm the session survives
 - [ ] make Keycloak unreachable and confirm the app shows a retry, not a redirect loop

@@ -1,6 +1,6 @@
 ---
-applyTo: "backend/**,frontend/src/lib/**,frontend/src/components/AuthPage.tsx,supabase/**,db/**,packages/shared/**"
-description: "Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3, Keycloak and HashiCorp Vault in a closed environment."
+applyTo: 'backend/**,frontend/src/lib/**,frontend/src/components/SignInPrompt.tsx,supabase/**,db/**'
+description: 'Rules for the portability-critical data, auth and storage layer — this app is migrating off Supabase onto PostgreSQL, S3, Keycloak and HashiCorp Vault in a closed environment.'
 ---
 
 # Portability-critical layer
@@ -42,20 +42,23 @@ The `backend/` workspace exists with the infrastructure layers done:
 - `backend/src/index.ts` — lifecycle only; `app.ts` assembles the Express app
 - `backend/src/types/index.ts` — `AuthUser` + the single `Request` augmentation
 - `backend/src/routes/index.ts` — mounts `/me` and `/user-sounds`, `requireUser` per mount
-- `backend/src/middleware/requireUser.ts` — `req.user` from `MOCK_USER_ID` under
-  `IS_BLACK_ENV`, 501 otherwise. It grants no privileges.
+- `backend/src/middleware/requireUser.ts` — verifies the ID token cookie on **every**
+  request; `MOCK_USER_ID` under `IS_BLACK_ENV`. It grants no privileges.
+- `backend/src/routes/auth.ts` + `backend/src/utils/oidc.ts` + `utils/session.ts` — the
+  Keycloak code flow with `state`, `nonce` and PKCE S256, built on `jose`. **No
+  `openid-client`** — do not add it.
 - `backend/src/middleware/errorHandler.ts` — `notFound` + the handler; never leaks `pg` text
 - `backend/src/routes/userSounds.ts` — the five board routes, every one caller-scoped
 - **No `packages/shared` and no turbo** — both were built and removed. `SOUNDS` stays in
   `frontend/src/lib/sounds.ts`, the API neither seeds nor validates `sound_id`, and `POST
-  /api/user-sounds` takes an array so the client can seed its own board in one call.
+/api/user-sounds` takes an array so the client can seed its own board in one call.
 - `backend/src/utils/envCheck.ts`, `backend/src/utils/logger.ts`
 - `backend/src/checkConnectivity.ts` — `npm run api:check`
 - `db/migrations/0001_init.sql` (three tables) and `docker-compose.yaml` (MinIO only —
   the dev database is Supabase, reached over `pg` with TLS)
 
-**Do not add a second way to read secrets, build an S3 client, or open a database pool.**
-Still to come: the OIDC routes and the S3 upload path.
+**Do not add a second way to read secrets, build an S3 client, open a database pool, or run
+the OIDC flow.** Still to come: the S3 upload path.
 
 Two things in `routes/userSounds.ts` that look odd and are not: ownership compares
 `user_id::text = $1` so queries work before and after `0002` changes the column type, and
@@ -101,14 +104,16 @@ fallback values for things the architecture guarantees.
    `useSharedSounds` are the only things that talk to the backend. Do not scatter
    queries into components — that turns a contained port into a rewrite.
 9. **Keep these shapes stable** (note `api.ts` **throws**, it does not return
-   `{ data, error }` — react-query handles the throw): the `useAuth`
-   context (`user.id`, `user.email`, `user.user_metadata.name`, `session`, `loading`,
-   `signOut`), the `useUserSounds` return object, and `BoardSound.audio_path` as a
+   `{ data, error }` — react-query handles the throw; and the auth context is now
+   `{ user, loading }`, `session` having been dropped as unread and `signOut` because
+   there is no logout): the `useAuth`
+   context (`user.id`, `user.email`, `user.user_metadata.name`, `loading`), the
+   `useUserSounds` return object, and `BoardSound.audio_path` as a
    plain fetchable Web-Audio-decodable URL. Map OIDC claims onto `user`
-   (`sub` → `id`, `name ?? preferred_username` → `user_metadata.name`) and `App.tsx`
+   (`upn` → `id`, `name ?? preferred_username` → `user_metadata.name`) and `App.tsx`
    needs no changes at all.
-10. **Enforce upload size limits** on both client and server. None exists today; the
-    only cap was Supabase Storage's 50 MiB, and it disappears.
+10.   **Enforce upload size limits** on both client and server. None exists today; the
+      only cap was Supabase Storage's 50 MiB, and it disappears.
 
 ## Playback constraint that is easy to break
 
@@ -140,7 +145,7 @@ fallback values for things the architecture guarantees.
 
 No big-bang cutover.
 
-1. **Capture** the rows *and* download every `file_url` while Supabase is still
+1. **Capture** the rows _and_ download every `file_url` while Supabase is still
    reachable — those signed URLs are the only handle on the bytes. Export user emails
    too; the identity mapping needs them.
 2. ~~**Seam**~~ — **done.** `frontend/src/lib/api.ts` calls `/api/*` directly and throws;
@@ -151,10 +156,10 @@ No big-bang cutover.
    module, the S3 client, the OIDC routes and per-request verification. Build
    `IS_BLACK_ENV` mock mode first so this is developable with neither Keycloak nor Vault
    reachable. Test against the real PostgreSQL, S3, Vault and Keycloak.
-5. **Flip**: `frontend/src/lib/api.ts` over `fetch` with `credentials: 'same-origin'`, `useAuth`
-   onto `GET /api/me` plus a `login()` that navigates to `/auth/login`, **delete**
-   `AuthPage.tsx`, remove `@supabase/supabase-js`. No OIDC library in the frontend —
-   `openid-client` is backend-only.
+5. ~~**Flip**~~ — **done.** `useAuth` is a `useQuery` on `/api/me`, `AuthPage.tsx` became
+   `SignInPrompt.tsx`, and both Supabase packages are uninstalled. Zero Supabase calls
+   remain. Identity is still `MOCK_USER_ID`, so the next step is the Keycloak flow — no
+   OIDC library in the frontend, `openid-client` is backend-only.
 6. **Harden**: see `airgap-readiness.instructions.md`.
 
 ## Ask, don't assume

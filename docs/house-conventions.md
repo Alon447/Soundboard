@@ -49,8 +49,10 @@ runs the whole Authorization Code flow inside its own Node backend. The reasonin
   Keycloak client registration and one place that knows about the IdP. For a single
   service it is an extra deployment unit, an extra health check and an extra network hop
   for no benefit.
-- **The flow is a library call.** `openid-client` does discovery, the authorize URL, PKCE
-  and the code exchange, including ID token validation. The three routes are thin.
+- **The flow is small.** Against this Keycloak it is a query string, one form POST with
+  `client_secret_basic`, and a JWT verification — see `auth-service/app/services/oidc/`.
+  Soundboard implements it directly with `jose`; no `openid-client`. The three routes are thin
+  either way.
 - **Fewer moving parts in an air-gapped environment**, where every additional service is
   another thing to image, mirror and get firewall rules for.
 

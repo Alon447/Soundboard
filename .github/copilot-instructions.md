@@ -39,7 +39,8 @@ orchestration only. **No `packages/shared` and no turbo** — both were built an
 the client seeds its own board. All scripts run from the root.
 
 ```bash
-docker compose up -d    # minio on 9010 + bucket (no postgres: dev uses Supabase over pg)
+docker compose up -d    # minio on 9010 + bucket. No postgres by design: under
+                        # IS_BLACK_ENV the db is Supabase's hosted PostgreSQL, over pg
 npm run dev             # Vite on 3000, proxying /api and /auth to the backend on 3001
 npm run dev:api         # backend on 3001, tsx watch
 npm run typecheck:all   # frontend + backend
@@ -61,16 +62,18 @@ failures unrelated to current work; eslint does not yet cover `backend/`.
 
 ## Conventions
 
-- The board lives in Supabase (`user_sounds`, `shared_sounds`) and requires sign-in.
-  There is no guest/local fallback.
-- Auth today is Supabase email + password. The target is Keycloak SSO via a server-side
-  code flow **in our own backend**, setting an httpOnly cookie. No OIDC library in the
-  browser, no login UI — `AuthPage.tsx` gets deleted, not rewritten. `openid-client` goes on
-  the backend only. Do not add any other auth flow.
-- `.env` must hold `VITE_SUPABASE_URL` and the anon key of the *same* project ref;
-  restart the dev server after changing it.
-- Schema changes go in `supabase/migrations` while still on Supabase, applied with
-  `npx supabase db push`.
+- The board lives in PostgreSQL (`user_sounds`), reached through our own API at
+  `/api/user-sounds` — never from the browser directly. There is no guest/local fallback.
+- **Auth is the Keycloak code flow in our own backend**, setting an httpOnly cookie holding
+  the ID token, verified on every request with `jose` + JWKS. Built on `jose` alone — **no
+  `openid-client`**, and no OIDC library in the browser. No login form either:
+  `SignInPrompt.tsx` is a single button. Do not add any other auth flow.
+- Under `IS_BLACK_ENV` that whole path is bypassed for `MOCK_USER_ID`, so **development is
+  unauthenticated**. That is how it gets built with no realm reachable; do not ship it.
+- `frontend/.env` no longer matters — the `VITE_SUPABASE_*` vars in it are read by nothing.
+  Backend config lives in `backend/.env`, secrets in `backend/local_secrets/`.
+- Schema changes go in `db/migrations/`. The `supabase` CLI is uninstalled;
+  `supabase/migrations/` is kept only as the record of the original schema.
 - Built-in pads are declared in `frontend/src/lib/sounds.ts`; bundled audio lives in
   `frontend/public/sounds` and pad images in `frontend/public/images`.
 - Prefer mp3 and mp4 support when working on playback behavior.
@@ -164,8 +167,9 @@ wire protocol. Porting means rebuilding the HTTP layer, not swapping a database.
 
 ## Known traps
 
-- `frontend/src/lib/ffmpegConvert.ts` loads its wasm core from `unpkg.com` at runtime — a hard
-  failure offline, and it only breaks *video* uploads, so it is easy to miss.
+- ~~`frontend/src/lib/ffmpegConvert.ts` loads its wasm core from `unpkg.com`~~ — fixed; the
+  core is imported with `?url` and bundled. The `ffmpeg-core` alias and the
+  `assetsInlineLimit` exception in `vite.config.ts` both look removable and are not.
 - COOP/COEP headers are set by a Vite plugin for dev and preview only. Production
   must send them or `SharedArrayBuffer` is undefined and ffmpeg-mt fails.
 - `getBuffer` in `App.tsx` calls bare `fetch(url)` with no headers and caches decoded

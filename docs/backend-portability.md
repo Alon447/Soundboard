@@ -64,9 +64,9 @@ All of it lands in **one Node process**. The sibling projects split auth into a 
 in yanshuf3's case, secrets into another service; Soundboard does neither. See
 [`house-conventions.md`](./house-conventions.md).
 
-Three source files still talk to Supabase, and all of it is auth:
-`frontend/src/lib/supabase.ts` (the client), `frontend/src/lib/useAuth.tsx` and
-`frontend/src/components/AuthPage.tsx` — **5 calls left, 0 data.** See
+**No source file talks to Supabase any more** — 0 calls, and both packages uninstalled. What
+remains is finishing the replacement: the Keycloak flow behind the 501 stubs in
+`backend/src/routes/auth.ts`, and the S3 upload path. See
 [`supabase-surface-inventory.md`](./supabase-surface-inventory.md) for the exact
 call sites.
 
@@ -161,7 +161,7 @@ It now lives in the Soundboard backend instead. A sidecar earns its keep when se
 share one Keycloak client registration and one place that knows about the IdP; for a single
 small service it is an extra deployment unit, health check and network hop for nothing, and
 in an air-gapped environment every additional service is another thing to image, mirror and
-get firewall rules for. `openid-client` reduces the flow to three thin routes.
+get firewall rules for. The flow itself is three thin routes plus `jose`.
 
 The cost is one dependency a shared sidecar would have provided: Soundboard needs its own
 Keycloak client registration, with the `client_secret` in Vault.
@@ -279,10 +279,9 @@ easiest thing to get wrong in this migration.
    (`double precision` — recommended) or register a type parser
    (`pg.types.setTypeParser(1700, parseFloat)`). `integer` is parsed to a number,
    so `position` is fine.
-2. **ffmpeg.wasm fetches its core from `unpkg.com`** at runtime
-   (`frontend/src/lib/ffmpegConvert.ts`). This is a hard failure in an air-gapped network
-   and it has nothing to do with Supabase. `@ffmpeg/core-mt` is already a
-   dependency — copy its `dist/esm` into `frontend/public/ffmpeg/` and point `baseURL` there.
+2. ~~**ffmpeg.wasm fetches its core from `unpkg.com`**~~ — **fixed.**
+   `frontend/src/lib/ffmpegConvert.ts` imports the three `@ffmpeg/core-mt` files with `?url`,
+   so Vite emits them same-origin. It had nothing to do with Supabase.
 3. **COOP/COEP headers only exist in dev.** They are injected by a Vite plugin for
    the dev and preview servers. A production nginx/IIS must send
    `Cross-Origin-Opener-Policy: same-origin` and
@@ -380,22 +379,37 @@ client, both migrations (`0001_init.sql` for a fresh database, `0002` altering t
 Supabase `user_sounds`; no `auth.` or `storage.` references in either), the connection pool,
 and the Express 5 API serving the five board routes behind a mock identity.
 `docker-compose.yaml` provides MinIO only — development points `pg` at the Supabase
-database, so there is one driver and one dialect across both environments. Remaining: the
-OIDC routes and per-request token verification, then the S3 upload path. Build
+database, so there is one driver and one dialect across both environments. The OIDC routes and
+per-request verification are done too (see Phase 2b). Remaining: the S3 upload path. Build
 `IS_BLACK_ENV` mock mode first so the whole thing is developable with no Keycloak and no
 Vault reachable. Import the Phase 0 data, rewriting every Supabase UUID to its `upn`.
 Then test against the real closed-environment PostgreSQL, S3, Vault and Keycloak, not local
 substitutes — versions, path-style quirks, privilege levels and realm configuration are
 what will bite.
 
-**Phase 3 — flip the seam.**
-Reimplement `frontend/src/lib/api.ts` over `fetch('/api/...')` with
-`credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with a
-`GET /api/me` call plus a `login()` that navigates to `/auth/login`, **delete**
-`AuthPage.tsx`, then remove `@supabase/supabase-js`, the `supabase` CLI dev dependency and
-the `VITE_SUPABASE_*` vars. The two data hooks should barely change if Phase 1 was done
-properly, and no OIDC client library is added to the frontend — `openid-client` lives on
-the backend only.
+**Phase 2b — the Keycloak flow. Built, untested.**
+`backend/src/utils/oidc.ts`, `routes/auth.ts` and `utils/session.ts` implement the code flow
+on `jose` alone — lazy discovery, `client_secret_basic` exchange, and per-request ID token
+verification with `iss`, `aud` and a 30s clock tolerance. `state`, `nonce` and PKCE S256 are
+all validated, and the session cookie expires with the token rather than on a fixed leeway.
+Every item on the sibling do-not-copy list is addressed. **No realm has been reached**, so
+none of it has run: the first contact with a real Keycloak is where issuer-URL mismatches and
+redirect-URI registration will bite.
+
+**Phase 3 — flip the seam. Done.**
+`useAuth.tsx` is a react-query `useQuery` on `GET /api/me`; `AuthPage.tsx` became
+`SignInPrompt.tsx`, a single button rather than an automatic redirect, so a failing
+`/api/me` cannot loop; `supabase.ts` is deleted and both `@supabase/supabase-js` and the
+`supabase` CLI are uninstalled. The data hook barely changed, and no OIDC client library was
+added to the frontend — `openid-client` will live on the backend only.
+
+`session` was dropped from the auth context: nothing read it. The `VITE_SUPABASE_*` vars are
+still in `frontend/.env`, read by nothing; the anon key needs rotating regardless because it
+was committed earlier in this repo's history.
+
+**What this does not do is add authentication.** `requireUser` still returns the
+`MOCK_USER_ID` identity and `/auth/*` returns 501. The app is unauthenticated in dev, which
+was already true — the API ignored the Supabase session — but it is now visibly true.
 
 **Phase 4 — harden for the closed environment.**
 Vendor the ffmpeg core, set COOP/COEP on the API's HTML response, rename the

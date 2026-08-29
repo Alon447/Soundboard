@@ -2,6 +2,11 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { fileURLToPath, URL } from 'node:url';
+import { dirname } from 'node:path';
+
+// Aliased rather than deep-imported: @ffmpeg/core-mt's exports map exposes only the package
+// root and ./wasm, and never the worker.
+const ffmpegCore = dirname(fileURLToPath(import.meta.resolve('@ffmpeg/core-mt')));
 
 export default defineConfig({
   plugins: [
@@ -30,6 +35,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      'ffmpeg-core': ffmpegCore,
     },
   },
   server: {
@@ -46,5 +52,7 @@ export default defineConfig({
   },
   build: {
     chunkSizeWarningLimit: 1500,
+    // Small enough to be inlined by default, and a data: URL cannot back a Worker.
+    assetsInlineLimit: (file: string) => (file.includes('ffmpeg-core.worker') ? false : undefined),
   },
 });

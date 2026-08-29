@@ -1,6 +1,16 @@
 ---
 inclusion: fileMatch
-fileMatchPattern: ["backend/**", "frontend/src/lib/**", "frontend/src/components/AuthPage.tsx", "supabase/**", "db/**", "docs/target-architecture.md", "docs/backend-portability.md", "docs/house-conventions.md"]
+fileMatchPattern:
+   [
+      'backend/**',
+      'frontend/src/lib/**',
+      'frontend/src/components/SignInPrompt.tsx',
+      'supabase/**',
+      'db/**',
+      'docs/target-architecture.md',
+      'docs/backend-portability.md',
+      'docs/house-conventions.md',
+   ]
 ---
 
 # You are editing the portability-critical layer
@@ -33,7 +43,7 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
 
 3. **Do not rely on RLS as the only authorization.** The client currently sends
    `user_id` in inserts and deletes with `.eq('id', dbId)` and no user filter. That
-   is safe *only* because of `auth.uid()` policies. Derive the user from the
+   is safe _only_ because of `auth.uid()` policies. Derive the user from the
    validated token server-side and scope every mutation. **A valid Keycloak token
    proves identity, not permission.**
 
@@ -46,12 +56,12 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
    Do not reintroduce a mirror table; do not add a per-request resolution query.
 
 4a. **Secrets come from Vault — already built.** `backend/src/utils/secrets.ts` provides
-   `getSecret(name, schema?)`, `SECRET_PATHS` and `invalidateSecret`; it reads Vault KV v2
-   directly, falls back to `backend/local_secrets/` when `IS_BLACK_ENV`, and caches for
-   `SECRET_TTL_MS`. Do not rewrite it, do not add a second way to read secrets, and never
-   put a credential in `.env` or in source. **Memoise anything derived from a secret** —
-   `backend/src/utils/s3.ts` and `backend/src/utils/pg.ts` show the shape — `getPool()` is
-   one pool for the process, not hana2trino's pool-per-call. Do not open a second pool.
+`getSecret(name, schema?)`, `SECRET_PATHS` and `invalidateSecret`; it reads Vault KV v2
+directly, falls back to `backend/local_secrets/` when `IS_BLACK_ENV`, and caches for
+`SECRET_TTL_MS`. Do not rewrite it, do not add a second way to read secrets, and never
+put a credential in `.env` or in source. **Memoise anything derived from a secret** —
+`backend/src/utils/s3.ts` and `backend/src/utils/pg.ts` show the shape — `getPool()` is
+one pool for the process, not hana2trino's pool-per-call. Do not open a second pool.
 
 5. **Write S3 before PostgreSQL.** They cannot share a transaction. `PutObject`
    first, then the rows in one transaction, so a failure leaves a harmless orphaned
@@ -71,9 +81,11 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
 
 9. **`frontend/src/lib/api.ts` throws; it does not return `{ data, error }`.** react-query
    turns a throw into `error` state on its own, so the wrapper only got unwrapped and
-   rethrown at every call site. What *must* stay stable is the **`useUserSounds` return
-   object** and the `useAuth` context shape (`user.id`, `user.email`,
-   `user.user_metadata.name`, `session`, `loading`, `signOut`). Preserve those and
+   rethrown at every call site. What _must_ stay stable is the **`useUserSounds` return
+   object** and the `useAuth` context shape — now `{ user, loading }`, where
+   `user` is `{ id, email, user_metadata: { name } }`. `session` was dropped because nothing
+   read it once supabase-js went, and `signOut` because there is no logout: users arrive
+   already signed in. Preserve those and
    `App.tsx` needs no changes at all.
 
 ## Playback constraint that is easy to break
@@ -98,8 +110,9 @@ Analysis and rejected options: #[[file:docs/backend-portability.md]]
 
 ## Also remember
 
-`frontend/src/lib/ffmpegConvert.ts` fetches its wasm core from `unpkg.com` at runtime — a hard
-failure offline, unrelated to Supabase. The AWS SDK's default credential chain probes
+`frontend/src/lib/ffmpegConvert.ts` now bundles its wasm core via Vite instead of fetching it
+from `unpkg.com`; the alias and the `assetsInlineLimit` exception in `vite.config.ts` are what
+keep it that way. The AWS SDK's default credential chain probes
 EC2 metadata and will hang in a closed network. See the `airgap-readiness` skill.
 
 Documentation updates ship with the change: see the `docs-sync` skill.

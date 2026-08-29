@@ -8,9 +8,9 @@ Serve the built frontend from the same origin, so there is no CORS,
 `Cross-Origin-Embedder-Policy: require-corp` is satisfied for audio, and the session cookie
 can be `SameSite=Lax`.
 
-Stack: **Express 5** (matching yanshuf3) + `pg` + `@aws-sdk/client-s3` + `zod`, with `jose`
-and `openid-client` still to come. **One process** — it serves `/api/*`, owns `/auth/*`, and
-reads Vault directly.
+Stack: **Express 5** (matching yanshuf3) + `pg` + `@aws-sdk/client-s3` + `jose` + `zod`. No
+`openid-client`. **One process** — it serves `/api/*`, owns `/auth/*`, and reads Vault
+directly.
 
 The board routes are built. Errors go through `httpError(status, code, message)` and a single
 handler that maps anything else to a 500, so the driver's text never reaches the client.
@@ -23,15 +23,17 @@ the OIDC flow itself**. No sidecar process.
 
 ### Auth routes
 
-| Method | Path | Role |
-| --- | --- | --- |
-| GET | `/auth/login?state=<return url>` | build the authorize URL, 302 to Keycloak |
-| GET | `/auth/callback?code=&state=` | exchange the code, set the cookie, 302 back to `state` |
-| POST | `/auth/logout` | clear the cookie, then RP-initiated logout at Keycloak |
+| Method | Path                             | Role                                                   |
+| ------ | -------------------------------- | ------------------------------------------------------ |
+| GET    | `/auth/login?state=<return url>` | build the authorize URL, 302 to Keycloak               |
+| GET    | `/auth/callback?code=&state=`    | exchange the code, set the cookie, 302 back to `state` |
 
-Use `openid-client`: it handles discovery, the authorize URL, PKCE and the code exchange
-including ID token validation. Soundboard is a **confidential client** — the exchange is
-server-side, authenticated with a `client_secret` read from Vault at
+**As built: `jose` only, no `openid-client`** — see `docs/target-architecture.md` for why.
+`backend/src/utils/oidc.ts` does lazy discovery, the token exchange and ID token
+verification; `routes/auth.ts` owns `state`, `nonce` and PKCE S256. **There is no logout
+route** — users arrive already signed in, so ending the Keycloak session buys them nothing.
+Soundboard is a **confidential
+client** — the exchange is server-side, authenticated with a `client_secret` read from Vault at
 `idp/keycloak/soundboard`.
 
 The session cookie is `HttpOnly; Secure; SameSite=Lax; Path=/`. The SPA never sees a token;
@@ -46,9 +48,9 @@ Verify the cookie **in-process on every request** with `jose`:
 ```ts
 const jwks = createRemoteJWKSet(new URL(`${OIDC_ISSUER_URL}/protocol/openid-connect/certs`));
 const { payload } = await jwtVerify(token, jwks, {
-  issuer: OIDC_ISSUER_URL,   // must be byte-identical to the iss claim
-  audience: OIDC_AUDIENCE,   // yanshuf3 skips this; do not skip it
-  clockTolerance: '30s',     // yanshuf3 uses zero; allow a little
+	issuer: OIDC_ISSUER_URL, // must be byte-identical to the iss claim
+	audience: OIDC_AUDIENCE, // yanshuf3 skips this; do not skip it
+	clockTolerance: '30s', // yanshuf3 uses zero; allow a little
 });
 ```
 
@@ -101,9 +103,9 @@ they are untested exactly where development happens.
 
 ### Session
 
-| Method | Path | Returns |
-| --- | --- | --- |
-| GET | `/api/me` | `{ id, email, user_metadata: { name } }` or 401 |
+| Method | Path      | Returns                                         |
+| ------ | --------- | ----------------------------------------------- |
+| GET    | `/api/me` | `{ id, email, user_metadata: { name } }` or 401 |
 
 Called once on load to resolve the local user and warm the mirror row. The client maps
 this onto the existing `useAuth` context shape, so `App.tsx` needs no changes.
@@ -116,16 +118,16 @@ redirecting when already on the login path. Copy both.
 
 ### Board
 
-| Method | Path | Body | Returns |
-| --- | --- | --- | --- |
-| GET | `/api/user-sounds` | — | `UserSound[]` with nested `shared_sound` |
-| POST | `/api/user-sounds` | `{ sound_id }` or `{ shared_sound_id }` + `{ name, color, icon, gain? }` | `UserSound` |
-| PATCH | `/api/user-sounds/:id` | any of `{ name, color, icon, gain }` | `UserSound` |
-| POST | `/api/user-sounds/reorder` | `{ order: uuid[] }` | `204` |
-| DELETE | `/api/user-sounds/:id` | — | `204` |
+| Method | Path                       | Body                                                                     | Returns                                  |
+| ------ | -------------------------- | ------------------------------------------------------------------------ | ---------------------------------------- |
+| GET    | `/api/user-sounds`         | —                                                                        | `UserSound[]` with nested `shared_sound` |
+| POST   | `/api/user-sounds`         | `{ sound_id }` or `{ shared_sound_id }` + `{ name, color, icon, gain? }` | `UserSound`                              |
+| PATCH  | `/api/user-sounds/:id`     | any of `{ name, color, icon, gain }`                                     | `UserSound`                              |
+| POST   | `/api/user-sounds/reorder` | `{ order: uuid[] }`                                                      | `204`                                    |
+| DELETE | `/api/user-sounds/:id`     | —                                                                        | `204`                                    |
 
 **As built, `POST` takes an array of pads** — one route covers a single add and a 15-pad
-seed. Notes below marked *superseded* describe the earlier server-seeding design.
+seed. Notes below marked _superseded_ describe the earlier server-seeding design.
 
 - `GET` must return `shared_sound` as a **nested object**, not flattened columns —
   `userSoundToBoard` reads `row.shared_sound?.…`. The `jsonb_build_object` query is
@@ -134,7 +136,7 @@ seed. Notes below marked *superseded* describe the earlier server-seeding design
   client-supplied index the way the current code does (`position: sounds.length`).
 - `reorder` replaces `moveSound`'s two racing `UPDATE`s with one statement. Validate
   that the id set matches the caller's pads exactly, and scope on `user_id`.
-- First-login seeding — *superseded.* The plan was for `GET /api/user-sounds` to seed the
+- First-login seeding — _superseded._ The plan was for `GET /api/user-sounds` to seed the
   built-ins in its own transaction, from a `SOUNDS` list in `packages/shared`. That package
   was removed, so **the client seeds**: it reads the board and, if empty, `POST`s all 15
   pads. `SOUNDS` lives in `frontend/src/lib/sounds.ts` only.
@@ -144,12 +146,12 @@ seed. Notes below marked *superseded* describe the earlier server-seeding design
 
 ### Community library
 
-| Method | Path | Body | Returns |
-| --- | --- | --- | --- |
-| GET | `/api/shared-sounds` | — | `SharedSound[]`, public only, newest first |
-| POST | `/api/shared-sounds` | multipart: `file`, `name`, `color`, `icon` | `SharedSound` |
-| DELETE | `/api/shared-sounds/:id` | — | `204`, owner only |
-| GET | `/api/shared-sounds/:id/audio` | — | audio bytes proxied from S3 |
+| Method | Path                           | Body                                       | Returns                                    |
+| ------ | ------------------------------ | ------------------------------------------ | ------------------------------------------ |
+| GET    | `/api/shared-sounds`           | —                                          | `SharedSound[]`, public only, newest first |
+| POST   | `/api/shared-sounds`           | multipart: `file`, `name`, `color`, `icon` | `SharedSound`                              |
+| DELETE | `/api/shared-sounds/:id`       | —                                          | `204`, owner only                          |
+| GET    | `/api/shared-sounds/:id/audio` | —                                          | audio bytes proxied from S3                |
 
 ## Upload: `POST /api/shared-sounds`
 
@@ -221,7 +223,7 @@ route to a `302` — but key the buffer cache on the sound id first.
 
 **As built, `api.ts` throws** — react-query catches it into `error` state, so a
 `{ data, error }` wrapper would only be unwrapped and rethrown at all six call sites. The
-server still *sends* `{ error: { code, message } }`; the client turns that into an `Error`.
+server still _sends_ `{ error: { code, message } }`; the client turns that into an `Error`.
 
 Built on **axios**, not `fetch`. A single response interceptor unwraps the server's error
 envelope, so no call site sees an axios error:
@@ -230,9 +232,9 @@ envelope, so no call site sees an axios error:
 // frontend/src/lib/api.ts — as built
 const client = axios.create({ baseURL: '/api', withCredentials: true });
 client.interceptors.response.use(undefined, (error) => {
-  throw new Error(error.response?.data?.error?.message ?? error.message);
+	throw new Error(error.response?.data?.error?.message ?? error.message);
 });
-export const api = { get, post, patch, remove };   // each returns response.data
+export const api = { get, post, patch, remove }; // each returns response.data
 ```
 
 `withCredentials` is what carries the httpOnly session cookie. The interceptor is also where
@@ -244,17 +246,17 @@ The original design, kept for the reasoning about why the hooks need no restruct
 type Result<T> = { data: T | null; error: { message: string } | null };
 
 async function request<T>(path: string, init?: RequestInit): Promise<Result<T>> {
-  try {
-    // credentials only — the session is an httpOnly cookie, there is no token to attach
-    const res = await fetch(path, { credentials: 'same-origin', ...init });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      return { data: null, error: { message: body.error?.message ?? `HTTP ${res.status}` } };
-    }
-    return { data: res.status === 204 ? (null as T) : await res.json(), error: null };
-  } catch (e) {
-    return { data: null, error: { message: (e as Error).message } };
-  }
+	try {
+		// credentials only — the session is an httpOnly cookie, there is no token to attach
+		const res = await fetch(path, { credentials: 'same-origin', ...init });
+		if (!res.ok) {
+			const body = await res.json().catch(() => ({}));
+			return { data: null, error: { message: body.error?.message ?? `HTTP ${res.status}` } };
+		}
+		return { data: res.status === 204 ? (null as T) : await res.json(), error: null };
+	} catch (e) {
+		return { data: null, error: { message: (e as Error).message } };
+	}
 }
 ```
 
@@ -274,9 +276,15 @@ them to, so the backend describes its own row shape independently.
 
 ```ts
 export type SharedSound = {
-  id: string; owner_id: string; owner_name: string; name: string;
-  icon: string; color: string; gain: number;
-  is_public: boolean; created_at: string;
+	id: string;
+	owner_id: string;
+	owner_name: string;
+	name: string;
+	icon: string;
+	color: string;
+	gain: number;
+	is_public: boolean;
+	created_at: string;
 };
 ```
 
@@ -302,7 +310,7 @@ id, which keeps the storage layer private.
 - **PostgreSQL: `ssl: { rejectUnauthorized: false }`, hardcoded.** A deliberate, scoped
   exception — TLS is on but the certificate is not verified, which is what lets one
   connection string work against both Supabase and an internal CA with no config knob.
-  Note this means a *non-TLS* PostgreSQL cannot be used at all; the server must accept SSL.
+  Note this means a _non-TLS_ PostgreSQL cannot be used at all; the server must accept SSL.
 - S3 and Keycloak still use `NODE_EXTRA_CA_CERTS`. Do **not** extend the PostgreSQL
   exception to them, and do not reach for `NODE_TLS_REJECT_UNAUTHORIZED=0`.
 - Pass S3 credentials explicitly and set `forcePathStyle: true` — confirmed required by

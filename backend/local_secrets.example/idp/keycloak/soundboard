@@ -1,0 +1,4 @@
+{
+  "client_id": "soundboard",
+  "client_secret": "only-used-when-IS_BLACK_ENV-is-false"
+}

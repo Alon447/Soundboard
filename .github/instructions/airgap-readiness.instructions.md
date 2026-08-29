@@ -1,5 +1,5 @@
 ---
-applyTo: "frontend/src/lib/ffmpegConvert.ts,frontend/src/lib/sounds.ts,frontend/src/components/add-sound/**,frontend/vite.config.ts,frontend/index.html,frontend/nginx.conf,frontend/public/**,backend/src/utils/**,backend/src/config/**,Dockerfile*,docker-compose*.yaml"
+applyTo: 'frontend/src/lib/ffmpegConvert.ts,frontend/src/lib/sounds.ts,frontend/src/components/add-sound/**,frontend/vite.config.ts,frontend/index.html,frontend/nginx.conf,frontend/public/**,backend/src/utils/**,backend/src/config/**,Dockerfile*,docker-compose*.yaml'
 description: "Offline / air-gapped deployment blockers: the ffmpeg.wasm core fetched from unpkg.com, COOP/COEP headers, external references, asset filenames, upload size limits, the S3 client's metadata probe, and Keycloak issuer-URL mismatches."
 ---
 
@@ -12,25 +12,22 @@ checklist in `.kiro/skills/airgap-readiness/SKILL.md`.
 Sections 1 to 5 apply to the app as it stands. Sections 6 and 7 apply once the Node
 API, S3 and Keycloak are in play.
 
-## 1. ffmpeg.wasm loads its core from unpkg.com — hard failure
+## 1. ffmpeg.wasm core — fixed, keep it that way
 
-`frontend/src/lib/ffmpegConvert.ts`:
+`frontend/src/lib/ffmpegConvert.ts` used to fetch its core from `unpkg.com`, which killed
+every `.mov`/`.mp4`/`.mkv` upload offline while audio-only uploads kept working — easy to
+miss. It now imports the three core files with `?url` so Vite emits them into the bundle.
 
-```ts
-const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-```
+Two things make that work, and both look removable:
 
-Every video upload goes through `extractAudioFromVideo`, so offline this kills
-uploads for `.mov`/`.mp4`/`.mkv`. Audio-only uploads still work, which makes it easy
-to miss.
+- `resolve.alias` maps `ffmpeg-core` to the resolved `@ffmpeg/core-mt` esm directory. The
+  package's `exports` map blocks deep imports and never exposes the worker, so the alias is
+  the only way in.
+- `build.assetsInlineLimit` returns `false` for `ffmpeg-core.worker`. At 2.8 KB it is under
+  the default threshold, and an inlined `data:` URL cannot back a `Worker`.
 
-`@ffmpeg/core-mt` is already a dependency. Copy
-`node_modules/@ffmpeg/core-mt/dist/esm/{ffmpeg-core.js,ffmpeg-core.wasm,ffmpeg-core.worker.js}`
-into `frontend/public/ffmpeg/`, point `baseURL` at `/ffmpeg`, and add an npm script wired
-into `prebuild` so it cannot drift on the next `npm install`. Keep `toBlobURL` —
-the worker still needs a blob URL under `COEP: require-corp`.
-
-Test with devtools set to offline, not by reading the code.
+Never reintroduce a CDN `baseURL`. Test with devtools set to offline, not by reading the
+code.
 
 ## 2. COOP/COEP headers only exist in dev
 
@@ -50,12 +47,9 @@ this a non-issue, which is another reason not to store absolute URLs.
 ## 3. Do not add external runtime references
 
 No CDN links, no webfonts, no remote scripts. `lucide-react` ships SVG components in
-the bundle and Tailwind 4 builds at compile time, so the current bundle is clean
-apart from the ffmpeg core.
-
-Existing references: the unpkg URL above (must fix) and
-`https://bolt.new/static/og_default.png` as `og:image` in `index.html` (inert, remove for
-tidiness). `YOUTUBE_SERVER` and `YouTubeSoundPanel.tsx` have been deleted.
+the bundle and Tailwind 4 builds at compile time, so the bundle is clean: the unpkg core
+and the `bolt.new` `og:image` are both gone, as are `YOUTUBE_SERVER` and
+`YouTubeSoundPanel.tsx`.
 
 Before shipping, grep `frontend/src/` and `index.html` for `https?://` and load the built app
 with devtools offline. Anything that 404s in the network panel is a blocker.
@@ -82,7 +76,7 @@ check in `UploadSoundPanel` before conversion, and enforce it server-side too.
 
 `backend/src/checkConnectivity.ts` reads both secrets, checks PostgreSQL and its three
 tables, and round-trips an object through S3 — four checks, one line each, reporting the
-driver's own error. It prints secret field *names* only, never values. Run it before
+driver's own error. It prints secret field _names_ only, never values. Run it before
 debugging anything else in a new environment.
 
 Two details in it worth copying into any similar script:
@@ -124,7 +118,8 @@ reaches Keycloak at one hostname and the API is configured with another, `iss`
 validation fails on every request even though login appears to succeed. Use one issuer
 URL resolvable from both; never disable issuer validation to get past it.
 
-Also: register the redirect URI *and* post-logout redirect URI on the client; expect
+Also: register the redirect URI on the client (there is no logout, so no post-logout URI
+to register); expect
 the first request after an API restart to pay the JWKS fetch; and make sure the API
 host and Keycloak agree on the time, because clock skew rejects valid tokens via
 `exp` / `nbf`.

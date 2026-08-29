@@ -8,13 +8,13 @@ patterns most of this copies.
 
 ## What the closed environment provides
 
-| Available | Used for |
-| --- | --- |
-| PostgreSQL | relational data: boards, shared sounds, asset metadata |
-| S3-compatible object storage | audio bytes |
-| Keycloak | authentication, via SSO |
-| HashiCorp Vault | secrets: S3 keys, DB password, OIDC client secret |
-| ability to run a Node process | the API, the auth routes, and nothing else |
+| Available                     | Used for                                               |
+| ----------------------------- | ------------------------------------------------------ |
+| PostgreSQL                    | relational data: boards, shared sounds, asset metadata |
+| S3-compatible object storage  | audio bytes                                            |
+| Keycloak                      | authentication, via SSO                                |
+| HashiCorp Vault               | secrets: S3 keys, DB password, OIDC client secret      |
+| ability to run a Node process | the API, the auth routes, and nothing else             |
 
 Soundboard adds **exactly one process**. Vault and Keycloak are spoken to directly over
 HTTP; there is no auth sidecar and no vault microservice, unlike the sibling projects. See
@@ -47,7 +47,7 @@ the Node backend. One origin, so no CORS anywhere, and
 
 Both sibling projects split auth into a separate process and yanshuf3 splits secrets into
 another. Soundboard deliberately does neither — see
-[`house-conventions.md`](./house-conventions.md) for why. The *patterns* are unchanged: a
+[`house-conventions.md`](./house-conventions.md) for why. The _patterns_ are unchanged: a
 server-side code flow setting an httpOnly cookie, and credentials read from Vault. Only
 the number of processes changes.
 
@@ -80,12 +80,13 @@ location.replace(loginUrl);
 
 Because Keycloak is fronting corporate SSO, an existing session means the user
 round-trips back without seeing a login form. **There is no login UI to build.**
-`AuthPage.tsx` is deleted, not rewritten.
+`AuthPage.tsx` is deleted, not rewritten — done, replaced by `SignInPrompt.tsx`, which is a
+single button rather than an automatic redirect so a failing `/api/me` cannot loop.
 
 `useAuth` keeps its current public shape so nothing downstream changes:
 
 ```ts
-{ user: { id, email, user_metadata: { name } } | null, session, loading, signOut }
+{ user: { id, email, user_metadata: { name } } | null, loading }
 ```
 
 `GET /api/me` populates it, and already returns this shape from the mock identity. `App.tsx`
@@ -98,15 +99,31 @@ resulting cookie. Soundboard runs the whole Authorization Code flow in its own N
 backend. It is one small app; a sidecar earns its keep when several apps share one client
 registration, not here.
 
-Four routes, all in `backend/src/routes/auth.ts`, using `openid-client` (which handles
-discovery, the authorize URL, PKCE and the code exchange including ID token validation):
+Three routes, two in `backend/src/routes/auth.ts` and `/api/me` in `routes/me.ts`:
 
-| Method | Path | Role |
-| --- | --- | --- |
-| GET | `/auth/login?state=<return url>` | build the authorize URL, 302 to Keycloak |
-| GET | `/auth/callback?code=&state=` | exchange the code, set the cookie, 302 back to `state` |
-| POST | `/auth/logout` | clear the cookie, then RP-initiated logout at Keycloak |
-| GET | `/api/me` | current user, or 401 |
+| Method | Path                              | Role                                                   |
+| ------ | --------------------------------- | ------------------------------------------------------ |
+| GET    | `/auth/login?state=<return path>` | build the authorize URL, 302 to Keycloak               |
+| GET    | `/auth/callback?code=&state=`     | exchange the code, set the cookie, 302 back to `state` |
+| GET    | `/api/me`                         | current user, or 401                                   |
+
+**Decision: `jose` only, no `openid-client`.** The earlier plan was to let `openid-client`
+handle discovery, the authorize URL, PKCE and the exchange. In practice the flow yanshuf3
+runs against this same Keycloak is a query string, one form POST with `client_secret_basic`,
+and a JWT verification — and `jose` is needed for the per-request verification regardless. So
+the library would add a package to mirror into Nexus to save roughly forty lines.
+
+What that costs is owning the correctness of the flow, so `backend/src/utils/oidc.ts` and
+`routes/auth.ts` validate all three of the things a library would have: **`state`** (random,
+compared on callback — not just the return URL), **`nonce`** (compared against the ID token
+claim) and **PKCE S256**. Revisit if the realm ever needs a flow more exotic than this one.
+
+**Decision: there is no logout.** Users reach Soundboard already signed in to the
+organisation account, so an RP-initiated logout would end that shared session on their
+behalf and give them nothing back — the next navigation signs them straight in again. The
+end-session endpoint, `OIDC_POST_LOGOUT_REDIRECT_URI` and `useAuth.signOut` were built and
+then removed. The session ends when the ID token expires, which is also when the cookie
+does. Revisit only if shared workstations make account switching a real requirement.
 
 Soundboard is a **confidential client**: the code exchange is server-side and authenticated
 with a `client_secret` read from Vault. The cookie is
@@ -128,8 +145,10 @@ Verifying a JWT locally against cached JWKS costs microseconds — there is no r
 skip it.
 
 **The one new dependency:** Soundboard needs its own Keycloak client registration with a
-`client_secret` in Vault. That is a request to whoever administers the realm, and it is the
-only thing a shared sidecar would have provided for free.
+`client_secret` in Vault, and `OIDC_REDIRECT_URI` registered on it. That is a request to
+whoever administers the realm, and it is the only thing a shared sidecar would have provided
+for free. It is also the reason none of this has run yet — the flow is written but has never
+reached a realm.
 
 ### Identity: `upn` is the ownership key
 
@@ -159,7 +178,7 @@ What it bought, and what replaces it:
   Keycloak.
 
 What it cost was a table, a query on the hot path, and a class of silent failure where a
-user gets a *new* row instead of their existing one and sees a freshly seeded empty board.
+user gets a _new_ row instead of their existing one and sees a freshly seeded empty board.
 
 **The hazard moves rather than disappearing.** If the import maps a UUID to the wrong
 `upn`, or misses one, that board is orphaned just as silently — the user signs in and gets
@@ -203,13 +222,13 @@ export const isBlackEnv = () => config.IS_BLACK_ENV;
 
 What it switches for Soundboard:
 
-| Concern | Effect when set |
-| --- | --- |
-| identity | `MOCK_USER_ID` is the whole session; Keycloak never contacted |
-| data | the Supabase database, over `pg` with TLS — same driver, same SQL, different host |
-| storage | MinIO instead of the internal S3 |
-| secrets | `local_secrets/*.json` instead of Vault |
-| privileges | **nothing** |
+| Concern    | Effect when set                                                                   |
+| ---------- | --------------------------------------------------------------------------------- |
+| identity   | `MOCK_USER_ID` is the whole session; Keycloak never contacted                     |
+| data       | the Supabase database, over `pg` with TLS — same driver, same SQL, different host |
+| storage    | MinIO instead of the internal S3                                                  |
+| secrets    | `local_secrets/*.json` instead of Vault                                           |
+| privileges | **nothing**                                                                       |
 
 **There is no local PostgreSQL.** Development talks to Supabase's database directly with
 `pg`, so the driver, the pool and every query are identical in both environments — the only
@@ -218,7 +237,7 @@ where PostgREST and `node-postgres` disagree about a type, because PostgREST is 
 picture from the first query. `docker-compose.yaml` therefore provides MinIO only.
 
 That last row is a deliberate divergence. In hana2trino the same flag bypasses
-authentication *and* grants `IT: true` (full admin) *and* swaps the Postgres target *and*
+authentication _and_ grants `IT: true` (full admin) _and_ swaps the Postgres target _and_
 returns mock data, so one mistyped environment variable is a complete auth bypass with
 admin rights. A mock user here is an ordinary user.
 
@@ -292,17 +311,17 @@ EOL. **Credentials come from Vault**, and the client is memoised. Implemented in
 `backend/src/utils/s3.ts`:
 
 ```ts
-export async function getStorage(): Promise<{ client: S3Client; bucket: string; endpoint: string }>
+export async function getStorage(): Promise<{ client: S3Client; bucket: string; endpoint: string }>;
 ```
 
 which builds, once:
 
 ```ts
 new S3Client({
-  endpoint: S3_DOMAIN,         // from the secret; the Zod schema requires a full URL
-  region: config.S3_REGION,    // dummy value; the SDK refuses to sign without one
-  forcePathStyle: true,        // verified on the wire: PUT /<bucket>/<key>
-  credentials: { accessKeyId: S3_ACCESS_ID, secretAccessKey: S3_SECRET_KEY },
+	endpoint: S3_DOMAIN, // from the secret; the Zod schema requires a full URL
+	region: config.S3_REGION, // dummy value; the SDK refuses to sign without one
+	forcePathStyle: true, // verified on the wire: PUT /<bucket>/<key>
+	credentials: { accessKeyId: S3_ACCESS_ID, secretAccessKey: S3_SECRET_KEY },
 });
 ```
 
@@ -337,10 +356,7 @@ module, ~150 lines, with a local-file branch for development.
 Implemented in `backend/src/utils/secrets.ts`:
 
 ```ts
-export async function getSecret<Fields extends Secret = Secret>(
-  name: string,
-  schema?: ZodType<Fields>,
-): Promise<Fields>
+export async function getSecret<Fields extends Secret = Secret>(name: string, schema?: ZodType<Fields>): Promise<Fields>;
 ```
 
 The Vault leg uses **native `fetch` with `AbortSignal.timeout`**, not axios. hana2trino
@@ -349,10 +365,10 @@ worth more here than matching the sibling line-for-line.
 
 ```ts
 const res = await fetch(`${config.VAULT_PATH.replace(/\/+$/, '')}/data/${name}`, {
-  headers: { 'X-Vault-Token': config.VAULT_TOKEN, Accept: 'application/json' },
-  signal: AbortSignal.timeout(config.VAULT_TIMEOUT_MS),
+	headers: { 'X-Vault-Token': config.VAULT_TOKEN, Accept: 'application/json' },
+	signal: AbortSignal.timeout(config.VAULT_TIMEOUT_MS),
 });
-const data = (await res.json() as { data?: { data?: unknown } })?.data?.data;  // KV v2 nests twice
+const data = ((await res.json()) as { data?: { data?: unknown } })?.data?.data; // KV v2 nests twice
 ```
 
 The optional Zod schema is the preferred way to read a secret — the bare type argument is
@@ -375,17 +391,17 @@ Copy these details:
 
 Paths for Soundboard:
 
-| Path | Contents |
-| --- | --- |
-| `s3` | `S3_DOMAIN`, `S3_ACCESS_ID`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` |
-| `db/postgres/<env>` | host, database, user, password, writePort |
-| `idp/keycloak/soundboard` | `client_id`, `client_secret` |
+| Path                      | Contents                                                       |
+| ------------------------- | -------------------------------------------------------------- |
+| `s3`                      | `S3_DOMAIN`, `S3_ACCESS_ID`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` |
+| `db/postgres/<env>`       | host, database, user, password, writePort                      |
+| `idp/keycloak/soundboard` | `client_id`, `client_secret`                                   |
 
 ### Cache the derived clients — the one thing to fix while copying
 
 hana2trino's module reads the store on **every** call, and its docstring is candid about
-the cost: *"the connection factories are called per request, which in the closed
-environment means a Vault round-trip per database call."* It buys secret rotation without a
+the cost: _"the connection factories are called per request, which in the closed
+environment means a Vault round-trip per database call."_ It buys secret rotation without a
 restart, which is genuinely useful, but Soundboard's audio endpoint cannot pay a Vault round
 trip per request.
 
@@ -397,7 +413,7 @@ The middle path, as implemented:
   into N identical Vault calls.
 - **The derived clients are memoised** — `getStorage()` builds one `S3Client` and reuses it,
   and `getPool()` one `pg.Pool`; `resetStorage()` and `closePool()` exist for rotation and
-  shutdown. hana2trino builds *two brand-new pools on every call* and never closes them,
+  shutdown. hana2trino builds _two brand-new pools on every call_ and never closes them,
   which exhausts connections under load. Do not copy that.
 - **Zod-parse at the boundary.** The generic type argument alone is not validated at
   runtime, so a missing field would surface later as a driver error.
@@ -406,11 +422,11 @@ The middle path, as implemented:
   it separates optional from critical (`logger.fatal` plus throw for a secret the server
   cannot start without) if optional ones ever appear.
 
-| Path | Contents |
-| --- | --- |
-| `s3` | `S3_DOMAIN`, `S3_ACCESS_ID`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` |
-| `db/postgres/<env>` | host, database, user, password, writePort |
-| `idp/keycloak/soundboard` | `client_id`, `client_secret` |
+| Path                      | Contents                                                       |
+| ------------------------- | -------------------------------------------------------------- |
+| `s3`                      | `S3_DOMAIN`, `S3_ACCESS_ID`, `S3_SECRET_KEY`, `S3_BUCKET_NAME` |
+| `db/postgres/<env>`       | host, database, user, password, writePort                      |
+| `idp/keycloak/soundboard` | `client_id`, `client_secret`                                   |
 
 Note yanshuf3's equivalent path is misspelled `idp/keycloack/...`; do not copy the typo, and
 confirm the exact path when the secret is provisioned.
@@ -418,7 +434,7 @@ confirm the exact path when the secret is provisioned.
 ### Local secrets when `IS_BLACK_ENV=true`
 
 Outside the closed environment there is no Vault, so `getSecret(name)` reads
-`backend/local_secrets/<name>` and parses it as JSON. The secret *name* is the path, so
+`backend/local_secrets/<name>` and parses it as JSON. The secret _name_ is the path, so
 `db/postgres/dev` is a file at `backend/local_secrets/db/postgres/dev` — nested directories,
 no file extension. This is the same convention as both sibling projects.
 
@@ -451,9 +467,10 @@ VAULT_TOKEN            # the only credential that lives in env, by necessity
 IS_BLACK_ENV           # true outside the closed environment: mock auth + MinIO + local files
 PG_ENV                 # dev | prod, selects the vault path
 S3_REGION              # dummy, but the SDK requires one
-OIDC_ISSUER_URL        # must be byte-identical to the token's iss claim
-OIDC_SCOPE
-OIDC_REDIRECT_URI
+OIDC_ISSUER_URL        # must be byte-identical to the token's iss claim; checked at discovery
+OIDC_REDIRECT_URI      # must also be registered on the Keycloak client
+OIDC_SCOPE             # defaults to "openid"
+OIDC_TIMEOUT_MS        # discovery and token exchange
 MAX_UPLOAD_BYTES
 MOCK_USER_ID          # IS_BLACK_ENV only: the user_sounds.user_id the mock session owns
 NODE_EXTRA_CA_CERTS    # internal CA, covers Vault, S3 and Keycloak
@@ -494,7 +511,7 @@ soundboard/
 │       ├── config/              # Zod-validated env
 │       ├── controllers/         # HTTP shape
 │       ├── middleware/          # requireUser, injectDb
-│       ├── routes/              # thin; auth.ts owns login/callback/logout
+│       ├── routes/              # thin; auth.ts owns login/callback
 │       ├── services/            # logic
 │       ├── types/
 │       └── utils/               # secrets.ts, s3.ts, pg.ts, oidc.ts, logger.ts
@@ -568,7 +585,7 @@ soundboard/
 │       ├── checkConnectivity.ts    # `npm run api:check`
 │       ├── types/index.ts          # AuthUser + the one Express Request augmentation
 │       ├── middleware/
-│       │   ├── requireUser.ts      # mock identity under IS_BLACK_ENV; 501 otherwise
+│       │   ├── requireUser.ts      # verifies the ID token every request; mock under IS_BLACK_ENV
 │       │   └── errorHandler.ts     # notFound + the handler that hides driver text
 │       ├── routes/
 │       │   ├── index.ts            # mounts /me and /user-sounds behind requireUser
@@ -598,7 +615,7 @@ Two migrations, two entry points, one destination:
 
 - **`0001_init.sql`** creates `sound_assets`, `shared_sounds` and `user_sounds` from
   scratch. This is the closed-environment path.
-- **`0002_user_sounds_to_target_shape.sql`** alters the *existing* Supabase `user_sounds`
+- **`0002_user_sounds_to_target_shape.sql`** alters the _existing_ Supabase `user_sounds`
   into the same shape, because that database already holds live rows. It converts the six
   former uploads into built-in `sound_id`s, drops `custom_file_url`, moves `gain` to
   `double precision`, changes `user_id` to `text`, and drops the foreign key into
@@ -613,20 +630,20 @@ hooks move to `/api`, and RLS with no policy denies everything.
 
 Everything is driven from the root; nothing needs a `cd`.
 
-| Command | Effect |
-| --- | --- |
-| `docker compose up -d` | MinIO on 9010, plus the bucket. No PostgreSQL — that is Supabase |
-| `npm run dev` | Vite dev server on 3000, proxying `/api` and `/auth` to 3001 |
-| `npm run dev:api` | the backend on 3001, `tsx watch` |
-| `npm run build` | frontend production build to `frontend/dist` |
-| `npm run lint` | eslint, frontend |
-| `npm run typecheck` / `typecheck:api` / `typecheck:all` | frontend / backend / both |
-| `npm run build:api` | compile the backend to `backend/dist` |
-| `npm run api:check` | connectivity self-check: every secret, PostgreSQL, and an S3 round trip |
-| `npm run secrets:example` | create `backend/local_secrets/` and `backend/.env` from the committed templates |
+| Command                                                 | Effect                                                                          |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `docker compose up -d`                                  | MinIO on 9010, plus the bucket. No PostgreSQL — that is Supabase                |
+| `npm run dev`                                           | Vite dev server on 3000, proxying `/api` and `/auth` to 3001                    |
+| `npm run dev:api`                                       | the backend on 3001, `tsx watch`                                                |
+| `npm run build`                                         | frontend production build to `frontend/dist`                                    |
+| `npm run lint`                                          | eslint, frontend                                                                |
+| `npm run typecheck` / `typecheck:api` / `typecheck:all` | frontend / backend / both                                                       |
+| `npm run build:api`                                     | compile the backend to `backend/dist`                                           |
+| `npm run api:check`                                     | connectivity self-check: every secret, PostgreSQL, and an S3 round trip         |
+| `npm run secrets:example`                               | create `backend/local_secrets/` and `backend/.env` from the committed templates |
 
 `api:check` is the first thing to run in a new environment. Four checks — the two secrets,
-PostgreSQL, S3 — each reporting one line. It prints secret field *names*, never values, and
+PostgreSQL, S3 — each reporting one line. It prints secret field _names_, never values, and
 the PostgreSQL leg verifies all three tables exist, which is how you find out
 `db/migrations` never ran.
 
@@ -639,8 +656,18 @@ guessing at causes, because a table of guessed remedies goes stale faster than i
 
 ## Dev and production
 
-**Dev**: `docker compose up` for PostgreSQL, MinIO and vault; the API on 3001; Vite on
-3000 proxying to both. Specific routes before general, and `/auth` bypasses the API:
+**Dev**: `docker compose up` for MinIO; the API on 3001; Vite on
+3000 proxying to both.
+
+**Under `IS_BLACK_ENV`, PostgreSQL is Supabase's hosted instance, reached over the plain
+wire protocol by `pg`.** That is a decision, not a leftover — compose deliberately runs no
+`postgres` service. It keeps development pointed at the real board and its real data while
+the import into the closed environment is still being worked out, and it costs nothing
+portability-wise: `pg` does not care that the far end happens to be Supabase, and no
+Supabase API is involved. Vault and Keycloak have no dev equivalent at all; those are the
+two `IS_BLACK_ENV` bypasses.
+
+Specific routes before general, and `/auth` bypasses the API:
 
 ```ts
 // frontend/vite.config.ts
@@ -676,24 +703,25 @@ will not load. The Vite plugin that sets these today covers dev and preview only
 
 Recorded so the reasoning is not re-litigated.
 
-| Decision | First draft (PG only) | Second draft (S3 + Keycloak known) | Now (yanshuf3 known) |
-| --- | --- | --- | --- |
-| audio bytes | `bytea` column | S3 object, key in PG | unchanged |
-| audio URL | API serving `bytea` | API proxying S3 | unchanged; yanshuf3 confirms proxy-not-presign |
-| auth | own users + bcrypt + sessions | Keycloak OIDC, PKCE in the SPA | Keycloak, **server-side code flow in our backend**, httpOnly cookie |
-| token in browser | n/a | access token in memory | **none** — httpOnly cookies |
-| `getBuffer` auth | n/a | thread a bearer token in | **nothing to do**, cookies are automatic |
-| task runner | n/a | turbo, following yanshuf3 | **none** — npm workspace scripts and `pre*` hooks |
-| identity key | local `app_users.id` | Keycloak `sub` | **`upn` stored directly**; no mirror table |
-| dev database | local PostgreSQL | local PostgreSQL | **Supabase, over `pg`** — one driver, two hosts |
-| layout | add `server/` | `apps/web` + `apps/api` | **`frontend/` + `backend/`**, no shared package |
-| board seeding | n/a | server-side, from shared `SOUNDS` | **client-side**; the server has no built-in list |
-| login UI | email + password form | sign-in button | **none** — SSO redirect |
-| npm in closed net | "use a mirror" | same | **Nexus**, with `stripLockIntegrity` before `npm ci` |
-| Python needed? | n/a | maybe, for an auth BFF | **no** |
-| auth flow location | n/a | a sidecar process | **our own Node backend** |
-| secrets access | env vars | a vault microservice | **direct to Vault KV v2, in-process** |
-| S3 credentials | env vars | vault | **vault**, memoised client |
+| Decision           | First draft (PG only)         | Second draft (S3 + Keycloak known) | Now (yanshuf3 known)                                                |
+| ------------------ | ----------------------------- | ---------------------------------- | ------------------------------------------------------------------- |
+| audio bytes        | `bytea` column                | S3 object, key in PG               | unchanged                                                           |
+| audio URL          | API serving `bytea`           | API proxying S3                    | unchanged; yanshuf3 confirms proxy-not-presign                      |
+| auth               | own users + bcrypt + sessions | Keycloak OIDC, PKCE in the SPA     | Keycloak, **server-side code flow in our backend**, httpOnly cookie |
+| token in browser   | n/a                           | access token in memory             | **none** — httpOnly cookies                                         |
+| `getBuffer` auth   | n/a                           | thread a bearer token in           | **nothing to do**, cookies are automatic                            |
+| task runner        | n/a                           | turbo, following yanshuf3          | **none** — npm workspace scripts and `pre*` hooks                   |
+| identity key       | local `app_users.id`          | Keycloak `sub`                     | **`upn` stored directly**; no mirror table                          |
+| dev database       | local PostgreSQL              | local PostgreSQL                   | **Supabase, over `pg`** — one driver, two hosts                     |
+| layout             | add `server/`                 | `apps/web` + `apps/api`            | **`frontend/` + `backend/`**, no shared package                     |
+| board seeding      | n/a                           | server-side, from shared `SOUNDS`  | **client-side**; the server has no built-in list                    |
+| login UI           | email + password form         | sign-in button                     | **none** — SSO redirect                                             |
+| npm in closed net  | "use a mirror"                | same                               | **Nexus**, with `stripLockIntegrity` before `npm ci`                |
+| Python needed?     | n/a                           | maybe, for an auth BFF             | **no**                                                              |
+| auth flow location | n/a                           | a sidecar process                  | **our own Node backend**                                            |
+| OIDC library       | n/a                           | `openid-client`                    | **none** — `jose` only, flow written directly                       |
+| secrets access     | env vars                      | a vault microservice               | **direct to Vault KV v2, in-process**                               |
+| S3 credentials     | env vars                      | vault                              | **vault**, memoised client                                          |
 
 Unchanged throughout, and still the things that matter most: **never store an absolute
 media URL in the database**, and **derive the user server-side, never from the request
@@ -703,8 +731,7 @@ body**.
 
 - **A Keycloak client registration for Soundboard**, with `client_secret` stored at
   `idp/keycloak/soundboard` in Vault. The only external dependency the
-  no-sidecar decision adds. Also confirm the allowed redirect URI and post-logout redirect
-  URI.
+  no-sidecar decision adds. Also confirm the allowed redirect URI.
 - **The Vault mount path and how `VAULT_TOKEN` is issued** to the Soundboard container —
   its TTL, and whether it needs renewing. It is the one credential that cannot come from
   Vault itself.

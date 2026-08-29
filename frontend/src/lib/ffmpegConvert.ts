@@ -1,5 +1,11 @@
 import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { fetchFile } from '@ffmpeg/util';
+
+// Emitted into the bundle by Vite rather than fetched from a CDN: there is no internet in
+// the target environment, and COEP: require-corp would reject a cross-origin core anyway.
+import coreURL from 'ffmpeg-core/ffmpeg-core.js?url';
+import wasmURL from 'ffmpeg-core/ffmpeg-core.wasm?url';
+import workerURL from 'ffmpeg-core/ffmpeg-core.worker.js?url';
 
 // Singleton instance — loaded once, reused across calls
 let ffmpeg: FFmpeg | null = null;
@@ -15,16 +21,7 @@ async function getFFmpeg(onProgress?: (ratio: number) => void): Promise<FFmpeg> 
       ffmpeg.on('progress', ({ progress }) => onProgress(Math.min(progress, 1)));
     }
 
-    // Load the multi-threaded core from the npm package files
-    // We use toBlobURL so the WASM assets are served from the same origin,
-    // which is required when COEP: require-corp is active.
-    const baseURL = 'https://unpkg.com/@ffmpeg/core-mt@0.12.6/dist/esm';
-
-    loadPromise = ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript'),
-    });
+    loadPromise = ffmpeg.load({ coreURL, wasmURL, workerURL });
   }
 
   await loadPromise;

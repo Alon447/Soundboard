@@ -1,6 +1,6 @@
 ---
 name: supabase-to-postgres
-description: Port the Soundboard app off Supabase (GoTrue auth, PostgREST, Storage) onto the closed-environment stack — PostgreSQL for data, S3 for audio bytes, Keycloak for auth, and a Node API tying them together. Use when working on auth, the data layer, sound storage, migrations, the API, the workspace layout, or anything about running this app on-prem. Also use when touching frontend/src/lib/useUserSounds.ts, frontend/src/lib/supabase.ts, frontend/src/lib/useAuth.tsx, frontend/src/components/AuthPage.tsx, backend/src/routes, backend/src/middleware, db/migrations, or supabase/migrations.
+description: Port the Soundboard app off Supabase (GoTrue auth, PostgREST, Storage) onto the closed-environment stack — PostgreSQL for data, S3 for audio bytes, Keycloak for auth, and a Node API tying them together. Use when working on auth, the data layer, sound storage, migrations, the API, the workspace layout, or anything about running this app on-prem. Also use when touching frontend/src/lib/useUserSounds.ts, frontend/src/lib/api.ts, frontend/src/lib/useAuth.tsx, frontend/src/components/SignInPrompt.tsx, backend/src/routes, backend/src/middleware, db/migrations, or supabase/migrations.
 ---
 
 # Porting Soundboard off Supabase
@@ -19,13 +19,13 @@ anything.
 
 What the environment provides, and what each piece replaces:
 
-| Available | Replaces |
-| --- | --- |
-| PostgreSQL | PostgREST-backed tables |
-| S3-compatible object storage | Supabase Storage |
-| Keycloak | GoTrue |
-| HashiCorp Vault (KV v2) | secrets that would otherwise sit in `.env` |
-| a Node process | the OIDC flow, ownership checks, S3 proxying, seeding |
+| Available                    | Replaces                                              |
+| ---------------------------- | ----------------------------------------------------- |
+| PostgreSQL                   | PostgREST-backed tables                               |
+| S3-compatible object storage | Supabase Storage                                      |
+| Keycloak                     | GoTrue                                                |
+| HashiCorp Vault (KV v2)      | secrets that would otherwise sit in `.env`            |
+| a Node process               | the OIDC flow, ownership checks, S3 proxying, seeding |
 
 **Soundboard adds exactly one process.** Vault and Keycloak are spoken to directly over
 HTTP. No auth sidecar, no vault microservice, no Python — unlike the sibling projects, which
@@ -64,8 +64,7 @@ derive the URL client-side:
 
 ```ts
 // frontend/src/lib/useUserSounds.ts — userSoundToBoard
-audio_path: builtin?.audio_path
-  ?? (row.shared_sound ? `/api/shared-sounds/${row.shared_sound.id}/audio` : '')
+audio_path: builtin?.audio_path ?? (row.shared_sound ? `/api/shared-sounds/${row.shared_sound.id}/audio` : '');
 ```
 
 `assetPath()` already passes through `/`-rooted paths. Nothing else changes, and the
@@ -138,30 +137,37 @@ only limit was Supabase Storage's 50 MiB and it disappears.
 The `backend/` workspace exists with the infrastructure layers done, so do not rewrite
 these — extend them:
 
-| Module | Provides |
-| --- | --- |
-| `backend/src/config/index.ts` | Zod-validated env; exits at boot listing every problem |
-| `backend/src/utils/secrets.ts` | `getSecret(name, schema?)` over Vault KV v2, local-file branch for `IS_BLACK_ENV`, TTL cache, `SECRET_PATHS`, `invalidateSecret` |
-| `backend/src/utils/s3.ts` | `getStorage()` memoised client, `buildObjectKey`, `sha256Hex`, put/get/head/delete |
-| `backend/src/utils/pg.ts` | `getPool()` one memoised `Pool` on the write port, `SELECT 1` probe, `closePool()` |
-| `backend/src/utils/envCheck.ts` | `isBlackEnv()` |
-| `backend/src/utils/logger.ts` | object-first structured logging, no dependencies |
-| `backend/src/checkConnectivity.ts` | `npm run api:check` — every secret, PostgreSQL + table check, S3 round trip |
-| `db/migrations/0001_init.sql` | the three tables, from `references/target-schema.sql` |
-| `docker-compose.yaml` | MinIO only. Dev PostgreSQL **is** Supabase, over `pg` with TLS unverified |
+| Module                             | Provides                                                                                                                         |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `backend/src/config/index.ts`      | Zod-validated env; exits at boot listing every problem                                                                           |
+| `backend/src/utils/secrets.ts`     | `getSecret(name, schema?)` over Vault KV v2, local-file branch for `IS_BLACK_ENV`, TTL cache, `SECRET_PATHS`, `invalidateSecret` |
+| `backend/src/utils/s3.ts`          | `getStorage()` memoised client, `buildObjectKey`, `sha256Hex`, put/get/head/delete                                               |
+| `backend/src/utils/pg.ts`          | `getPool()` one memoised `Pool` on the write port, `SELECT 1` probe, `closePool()`                                               |
+| `backend/src/utils/envCheck.ts`    | `isBlackEnv()`                                                                                                                   |
+| `backend/src/utils/logger.ts`      | object-first structured logging, no dependencies                                                                                 |
+| `backend/src/checkConnectivity.ts` | `npm run api:check` — every secret, PostgreSQL + table check, S3 round trip                                                      |
+| `db/migrations/0001_init.sql`      | the three tables, from `references/target-schema.sql`                                                                            |
+| `docker-compose.yaml`              | MinIO only. Dev PostgreSQL **is** Supabase, over `pg` with TLS unverified                                                        |
 
 | `backend/src/index.ts` | Lifecycle only: startup pool probe, listen, SIGTERM shutdown |
 | `backend/src/app.ts` | Express assembly: JSON, `/api` router, 404, error handler |
 | `backend/src/types/index.ts` | `AuthUser` + the single `Request` augmentation. Do not add a second |
 | `backend/src/routes/index.ts` | Mounts `/me` and `/user-sounds`, `requireUser` per mount |
-| `backend/src/middleware/requireUser.ts` | `req.user` from `MOCK_USER_ID` under `IS_BLACK_ENV`; 501 otherwise |
+| `backend/src/middleware/requireUser.ts` | Verifies the ID token cookie **every** request; `MOCK_USER_ID` under `IS_BLACK_ENV` |
+| `backend/src/routes/auth.ts` | Keycloak code flow: `state`, `nonce`, PKCE S256; login + callback only |
+| `backend/src/utils/oidc.ts` | Lazy discovery, JWKS, `client_secret_basic` exchange, `verifyIdToken` |
+| `backend/src/utils/session.ts` | Cookie helpers; the session cookie expires with the token |
 | `backend/src/middleware/errorHandler.ts` | `notFound` + the handler; never leaks `pg` text |
 | `backend/src/routes/userSounds.ts` | `GET`/`POST`/`PATCH`/`DELETE` + `POST /reorder`, all caller-scoped |
 | `backend/src/utils/httpError.ts` | `httpError(status, code, message)` for the error handler |
 | `frontend/src/lib/api.ts` | axios instance, `baseURL: '/api'`, `withCredentials`, error interceptor **throws** |
 
+Still to come: the S3 upload path.
 
-Still to come: the OIDC routes and the S3 upload path.
+**`jose` only, no `openid-client`** — the flow is a query string, one form POST and a JWT
+verification, and `jose` was needed for per-request verification anyway. The cost is owning
+`state`, `nonce` and PKCE ourselves, which `routes/auth.ts` does explicitly. Do not add
+`openid-client` on top.
 
 Three things in `routes/userSounds.ts` that look odd and are not: ownership is compared as
 `user_id::text = $1` so the queries work before and after `0002` changes the column type,
@@ -177,7 +183,7 @@ split is worth copying if read routing ever appears, not before.
 
 Each phase builds and typechecks on its own. No big-bang cutover.
 
-1. **Capture** — export the rows *and* download every `file_url` while Supabase is
+1. **Capture** — export the rows _and_ download every `file_url` while Supabase is
    still reachable. Those signed URLs are the only handle on the bytes. Export
    `auth.users` emails too: the identity mapping needs them. See
    `references/data-migration.md`.
@@ -193,13 +199,16 @@ Each phase builds and typechecks on its own. No big-bang cutover.
 4. **Backend** — ~~migrations~~, ~~the pool~~ and ~~the board routes~~ **done**
    (`db/migrations/0001_init.sql` + `0002`, `backend/src/utils/pg.ts`,
    `backend/src/routes/userSounds.ts` behind `requireUser`'s mock identity).
-   Remaining: the OIDC routes and the upload path from
-   `references/api-contract.md`, the secrets module, the S3 client, the OIDC routes and
-   per-request verification. **Build `IS_BLACK_ENV` mock mode first**, so the whole thing is
+   The OIDC routes and per-request verification are done as well. Remaining: the upload path
+   from `references/api-contract.md`. **Build `IS_BLACK_ENV` mock mode first**, so the whole thing is
    developable with neither Keycloak nor Vault reachable. Import the captured data. Then
    test against the real PostgreSQL, S3, Vault and Keycloak — versions, path-style quirks,
    privileges and realm config are what will bite, not logic.
-5. **Flip** — reimplement `frontend/src/lib/api.ts` over `fetch` with
+5. ~~**Flip**~~ — **done.** `useAuth` is a `useQuery` on `/api/me`, `AuthPage.tsx` was
+   replaced by `SignInPrompt.tsx` (one button, no form), `supabase.ts` is deleted and both
+   packages are uninstalled. **Zero Supabase calls remain.** Identity is still
+   `MOCK_USER_ID` in development, though the Keycloak path is now built behind it.
+   Superseded detail follows: reimplement `frontend/src/lib/api.ts` over `fetch` with
    `credentials: 'same-origin'`, replace `useAuth.tsx`'s Supabase session with
    `GET /api/me` plus a `login()` that navigates to `/auth/login`, **delete**
    `AuthPage.tsx`, then
@@ -214,7 +223,7 @@ Changing them turns a contained port into a rewrite.
 ```ts
 // frontend/src/lib/useAuth.tsx — same shape, Keycloak underneath
 { user: { id: string; email?: string; user_metadata?: { name?: string } } | null,
-  session: unknown | null, loading: boolean, signOut: () => Promise<void> }
+  loading: boolean }
 
 // frontend/src/lib/useUserSounds.ts — the exported hook API
 { sounds: BoardSound[], loading, error,
@@ -259,8 +268,8 @@ Do not port these forward.
 Ask rather than assume:
 
 - **A Keycloak client registration for Soundboard**, with `client_secret` at
-  `idp/keycloak/soundboard` in Vault, plus the allowed redirect and post-logout redirect
-  URIs. The only dependency the no-sidecar decision adds.
+  `idp/keycloak/soundboard` in Vault, plus the allowed redirect URI. The only dependency
+  the no-sidecar decision adds.
 - **The Vault mount path, and how `VAULT_TOKEN` reaches the container** — its TTL and
   whether it needs renewing.
 - Which S3 implementation (MinIO, Ceph RGW, StorageGRID, ECS)? yanshuf3 never names it.

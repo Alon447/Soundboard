@@ -58,6 +58,12 @@ const configSchema = z
 		SECRET_TTL_MS: intEnv(5 * 60 * 1000),
 		VAULT_TIMEOUT_MS: intEnv(5_000),
 
+		/** Must be byte-identical to the `iss` claim, or every verification fails. */
+		OIDC_ISSUER_URL: optionalEnv,
+		OIDC_REDIRECT_URI: optionalEnv,
+		OIDC_SCOPE: z.preprocess(blank, z.string().trim().min(1).default('openid')),
+		OIDC_TIMEOUT_MS: intEnv(5_000),
+
 		/** Only the region the SDK insists on signing with; on-prem stores ignore it. */
 		S3_REGION: z.preprocess(blank, z.string().trim().min(1).default('us-east-1')),
 
@@ -66,7 +72,7 @@ const configSchema = z
 	.superRefine((value, ctx) => {
 		if (value.IS_BLACK_ENV) return;
 
-		for (const key of ['VAULT_PATH', 'VAULT_TOKEN'] as const) {
+		for (const key of ['VAULT_PATH', 'VAULT_TOKEN', 'OIDC_ISSUER_URL', 'OIDC_REDIRECT_URI'] as const) {
 			if (!value[key]) {
 				ctx.addIssue({
 					code: z.ZodIssueCode.custom,
@@ -83,9 +89,7 @@ const parseConfig = (): Config => {
 	const result = configSchema.safeParse(process.env);
 
 	if (!result.success) {
-		const issues = result.error.issues
-			.map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
-			.join('\n');
+		const issues = result.error.issues.map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`).join('\n');
 		console.error(`Invalid environment configuration:\n${issues}`);
 		process.exit(1);
 	}

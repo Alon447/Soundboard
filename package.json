@@ -21,7 +21,6 @@
 		"secrets:example": "npm run secrets:example -w @soundboard/backend"
 	},
 	"devDependencies": {
-		"supabase": "^2.114.0",
 		"tsx": "^4.23.12",
 		"typescript": "^5.5.3",
 		"typescript-eslint": "^8.3.0"
